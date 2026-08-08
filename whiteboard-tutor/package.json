@@ -1,0 +1,30 @@
+{
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.116.0",
+    "@excalidraw/excalidraw": "^0.18.1",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.2.0",
+    "@types/react": "^18.3.31",
+    "@types/react-dom": "^18.3.7",
+    "@vitejs/plugin-react": "^6.0.5",
+    "playwright-core": "^1.62.1",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.1",
+    "vite-node": "^6.0.0",
+    "vitest": "^4.1.10"
+  },
+  "name": "whiteboard-tutor",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run",
+    "eval": "vite-node evals/capitulation.ts"
+  }
+}
