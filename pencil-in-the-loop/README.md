@@ -19,6 +19,7 @@ place, and sending the whole review back to the conversation the document came f
 | 8 | `docs/08-open-questions.md` | Things needing a human decision — ask, don't guess |
 | 9 | `docs/09-prior-art.md` | What already exists, and the exact gap this fills |
 | 10 | `docs/10-try-this-first.md` | The no-code version to run for two weeks before M0 |
+| 11 | `docs/11-backlog.md` | Ideas not in v1, and what would decide them |
 | — | `ui/mockups.html` | Visual reference for every screen |
 
 ## The one-paragraph version
