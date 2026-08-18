@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://pencil-in-the-loop.local/schema/meta.schema.json",
+  "title": "meta.json",
+  "description": "Document metadata written next to document.pdf in inbox/<YYYY-MM-DD-slug>/. Writers must emit id, title and createdAt. Readers must tolerate their absence: the app falls back to the filename for the title and to origin.kind 'manual' for everything under origin (docs/04-flows.md, failure handling). Unknown keys are ignored, never rejected.",
+  "type": "object",
+  "required": ["id", "title", "createdAt"],
+  "additionalProperties": true,
+  "properties": {
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The writing tool's identifier for this document, verbatim. A UUID string is preferred but not required; the app keeps whatever it is given and mints its own UUID alongside."
+    },
+    "title": {
+      "type": "string",
+      "description": "Display title. When absent the app uses the PDF metadata title, the markdown H1, then the filename, in that order."
+    },
+    "createdAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\\.[0-9]+)?(Z|[+-][0-9]{2}:?[0-9]{2})$",
+      "description": "ISO 8601. The app writes second precision with a Z suffix; it parses fractional seconds and numeric offsets too."
+    },
+    "sourceFormat": {
+      "enum": ["markdown", "pdf", "text", "html"],
+      "description": "What the document was before rendering. 'markdown' implies source.md, and usually sourcemap.json, sit alongside document.pdf."
+    },
+    "pageCount": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Advisory. The authoritative count comes from the rendered PDF."
+    },
+    "origin": { "$ref": "#/$defs/origin" }
+  },
+  "$defs": {
+    "origin": {
+      "type": "object",
+      "description": "Where the document came from. Every field is optional; a document with no origin at all is still perfectly readable.",
+      "additionalProperties": true,
+      "properties": {
+        "kind": {
+          "enum": ["cowork", "claude-code", "codex", "share", "manual"],
+          "description": "Note the hyphen in claude-code. An unrecognised value is read as 'manual'."
+        },
+        "sessionId": {
+          "type": "string",
+          "description": "Cowork session id, Claude Code hook session_id, or the Codex equivalent. Without it no return path can preserve thread context."
+        },
+        "threadTitle": {
+          "type": "string",
+          "description": "Human-facing conversation title, shown on the review sheet's destination row before the user commits."
+        },
+        "returnPath": { "$ref": "#/$defs/returnPath" }
+      }
+    },
+    "returnPath": {
+      "type": "object",
+      "description": "How a finished review gets back. Absent means no automated path, which is a supported outcome: the app falls back to copy, share sheet and save.",
+      "additionalProperties": true,
+      "properties": {
+        "type": {
+          "enum": ["poke", "checkin", "resume", "cloud", "none"],
+          "description": "An unrecognised value is read as 'none'."
+        },
+        "triggerId": {
+          "type": "string",
+          "description": "The scheduled task to fire. Meaningful for 'poke' and 'checkin' only."
+        },
+        "detail": {
+          "type": "string",
+          "description": "Free text carried through untouched, e.g. a working directory for --resume."
+        }
+      }
+    }
+  }
+}

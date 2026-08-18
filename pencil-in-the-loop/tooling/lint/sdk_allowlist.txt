@@ -1,0 +1,110 @@
+# Names that are not ours: Swift standard library, Foundation, and the Apple
+# frameworks this app uses. check_decls.py treats these as declared, and
+# check_style.py exempts them from the British-spelling glossary — Apple's
+# symbols keep Apple's spelling (STYLE.md § 2).
+#
+# Anything with one of these prefixes is also allowed, so most SDK types need no
+# entry: NS UI PK PDF CG CA CF CI CL CT AV SF SK MK WK UT OS QL XC
+#
+# Add a name here when you use an SDK type the list does not yet know. Do not
+# add one of ours — a project type that is not declared anywhere is the bug this
+# check exists to find.
+
+# Swift standard library
+Any AnyObject AnyHashable AnySequence AnyIterator AnyCollection
+Array ArraySlice AsyncStream AsyncThrowingStream AsyncSequence AsyncIteratorProtocol
+Bool BinaryInteger BinaryFloatingPoint Bundle
+Character CaseIterable Codable CodingKey CodingKeys Collection Comparable
+CustomStringConvertible CustomDebugStringConvertible
+Decodable Decoder DecodingError Dictionary Double
+Encodable Encoder EncodingError Equatable Error Element
+Float Float80
+Hashable Hasher
+Identifiable Int Int8 Int16 Int32 Int64 IteratorProtocol
+KeyedDecodingContainer KeyedEncodingContainer KeyPath
+LosslessStringConvertible
+MainActor Mirror
+Never Numeric
+Optional OptionSet
+Range RangeReplaceableCollection RawRepresentable Result
+Self Sendable Sequence Set String StringProtocol Strideable Substring
+Task TaskGroup TaskPriority
+UInt UInt8 UInt16 UInt32 UInt64 UnkeyedDecodingContainer UnkeyedEncodingContainer
+Unmanaged UnsafePointer UnsafeMutablePointer UnsafeRawPointer
+Void
+
+# Foundation
+AttributedString AttributedStringKey
+Calendar CharacterSet
+Data DataProtocol Date DateComponents DateFormatter DateInterval DispatchQueue
+FileHandle FileManager FileWrapper
+IndexSet ISO8601DateFormatter
+JSONDecoder JSONEncoder JSONSerialization
+Locale Logger
+Measurement
+Notification NotificationCenter NumberFormatter
+Operation OperationQueue
+Process ProcessInfo Progress PropertyListDecoder PropertyListEncoder
+RelativeDateTimeFormatter RunLoop
+Scanner
+Thread TimeInterval TimeZone Timer
+URL URLComponents URLQueryItem URLRequest URLResponse URLSession UUID
+UserDefaults
+Value
+
+# SwiftData
+Model ModelActor ModelContainer ModelContext ModelConfiguration
+FetchDescriptor SortDescriptor Schema Query Relationship Attribute Transient
+PersistentIdentifier PersistentModel
+
+# SwiftUI
+Alignment Angle AnyView App Binding Button ButtonStyle
+Color ColorScheme Commands Content Context
+Divider
+Edge EdgeInsets Environment EnvironmentKey EnvironmentValues EnvironmentObject
+Font ForEach Form
+GeometryReader Gradient Grid Group
+HStack
+Image
+Label LabelStyle Layout LazyVStack LazyHStack List
+Material Menu
+Namespace NavigationLink NavigationSplitView NavigationStack
+Observable ObservableObject
+Path PresentationDetent PreviewProvider
+ProgressView
+Rectangle RoundedRectangle
+Scene ScenePhase ScrollView Section SecureField Shape ShapeStyle
+Spacer State StateObject Stepper
+Text TextEditor TextField Toggle Toolbar ToolbarItem ToolbarItemGroup
+Transaction Transition
+VStack View ViewBuilder ViewModifier
+WindowGroup
+ZStack
+
+# PDFKit, PencilKit, Speech, UIKit spellings that are American on purpose
+PDFDocument PDFPage PDFView PDFSelection PDFAnnotation PDFDestination
+PKCanvasView PKDrawing PKInkingTool PKStroke PKStrokeRecognizer PKToolPicker
+PKEraserTool PKLassoTool PKInk
+SpeechAnalyzer SpeechTranscriber SFSpeechRecognizer SFSpeechRecognitionRequest
+AVAudioEngine AVAudioSession AVAudioPCMBuffer
+UIGestureRecognizer UILongPressGestureRecognizer UITapGestureRecognizer
+UIHoverGestureRecognizer UIPencilInteraction UIGraphicsPDFRenderer
+UIViewRepresentable UIViewControllerRepresentable
+contentInsetAdjustmentBehavior keyboardDismissMode
+NSFileCoordinator NSFilePresenter NSAttributedString NSMutableAttributedString
+NSParagraphStyle NSMutableParagraphStyle NSRange NSKeyedArchiver NSKeyedUnarchiver
+CryptoKit SHA256 Insecure
+
+# XCTest
+XCTestCase XCTAssert XCTAssertEqual XCTAssertNil XCTAssertNotNil XCTAssertTrue
+XCTAssertFalse XCTAssertThrowsError XCTAssertNoThrow XCTUnwrap XCTFail
+XCTAssertGreaterThan XCTAssertLessThan XCTAssertEqualWithAccuracy
+
+# Nested and associated type names that appear qualified in source
+Actor Index Iterator SubSequence UTF8View UTF16View UnicodeScalar
+UnicodeScalarView LocalizedError Continuation Failure Output Input
+Component Components Style Storage Value Key Kind Entry
+
+# Our own module names, for qualified references like Core.Anchor
+Core Storage Sync Ingest Annotate Export AppUI PencilLoopKit Markdown
+Foundation XCTest SwiftData SwiftUI UIKit PencilKit PDFKit Speech
