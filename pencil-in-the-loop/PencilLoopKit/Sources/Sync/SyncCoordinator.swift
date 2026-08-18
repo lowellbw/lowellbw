@@ -1,0 +1,460 @@
+//
+//  SyncCoordinator.swift
+//  Sync
+//
+//  The whole sync loop, as AppUI sees it: watch, scan, pin, ingest, store,
+//  write. One face for what is really six collaborators, so a view does not
+//  have to orchestrate them.
+//
+//  ─── WHERE A SCAN COMES FROM ─────────────────────────────────────────────────
+//  · foreground        — `start()`, which is idempotent and always scans;
+//  · the timer         — `PollingFolderWatcher`, every 15s while started;
+//  · pull-to-refresh   — `refresh()`, which throws so the gesture can show why;
+//  · a presenter nudge — folded into the timer, never acted on directly.
+//
+//  Concurrent scans coalesce onto one task, so a poll landing on top of a
+//  pull-to-refresh does the work once and both callers get the same answer.
+//
+//  ─── WHAT NEVER HAPPENS HERE ─────────────────────────────────────────────────
+//  Nothing on the reading or annotating path awaits anything in this file. The
+//  library is served from Storage, and documents are served from the pinned
+//  copies in the app container. If the folder is unreachable, every document
+//  already ingested opens exactly as fast as it did yesterday — losing the
+//  folder costs you new documents only (docs/02-spec.md § Cross-cutting).
+//
+
+import Foundation
+import Core
+
+/// `SyncCoordinating`, over the scanner, the pinner, the ingester, the store,
+/// the writer, the queue and the watcher.
+///
+/// **On failure:** `refresh()` and `send(_:)` throw `PencilLoopError`; both are
+/// user-initiated and both have somewhere to show it. Background work never
+/// throws into the UI — it reports through `events()` and carries on. A
+/// document that will not ingest becomes a `.ingestFailed` event and an error
+/// row, never a disappearance.
+public actor SyncCoordinator: SyncCoordinating {
+
+    private let folder: SyncFolder
+    private let store: any DocumentStoring
+    private let ingester: any DocumentIngesting
+    private let scanner: any InboxScanning
+    private let writer: any OutboxWriting
+    private let watcher: any FolderWatching
+    private let replyScanner: ReplyScanner
+    private let pinner: InboxItemPinner
+    private let stagingImporter: AppGroupStagingImporter
+    private let queue: OutboxQueue
+    private let importsAppGroupStaging: Bool
+
+    /// Concrete rather than `any FolderAccessing` on purpose: scanning,
+    /// pinning and writing all `await` in the middle, and the protocol's
+    /// `withAccess(to:perform:)` takes a synchronous closure. See the contract
+    /// request in this unit's report.
+    private let access: SyncFolderAccess
+
+    private var isStarted = false
+    private var activeScan: Task<Int, Error>?
+    private var watchTask: Task<Void, Never>?
+    private var listeners: [UUID: AsyncStream<SyncEvent>.Continuation] = [:]
+    private var deliveredReplies: Set<String> = []
+
+    /// - Parameters:
+    ///   - folder: the sync root, already prepared by `FolderAccessing`.
+    ///   - store: the library.
+    ///   - ingester: the single ingest path (docs/04-flows.md § F1).
+    ///   - scanner: finds candidate directories under `inbox/`.
+    ///   - writer: the atomic outbox write.
+    ///   - watcher: change notification. Polling by default.
+    ///   - replyScanner: finds `reply.md` in `outbox/`.
+    ///   - pinner: download-and-pin into the app container.
+    ///   - stagingImporter: the share extension's App Group hand-off.
+    ///   - queue: where a review waits when the folder is unreachable.
+    ///   - access: security-scoped access to `folder`.
+    ///   - importsAppGroupStaging: off in tests that have no App Group.
+    public init(
+        folder: SyncFolder,
+        store: any DocumentStoring,
+        ingester: any DocumentIngesting,
+        scanner: any InboxScanning = InboxScanner(),
+        writer: any OutboxWriting = OutboxWriter(),
+        watcher: any FolderWatching = PollingFolderWatcher(),
+        replyScanner: ReplyScanner = ReplyScanner(),
+        pinner: InboxItemPinner = InboxItemPinner(),
+        stagingImporter: AppGroupStagingImporter = AppGroupStagingImporter(),
+        queue: OutboxQueue = OutboxQueue(),
+        access: SyncFolderAccess = SyncFolderAccess(),
+        importsAppGroupStaging: Bool = true
+    ) {
+        self.folder = folder
+        self.store = store
+        self.ingester = ingester
+        self.scanner = scanner
+        self.writer = writer
+        self.watcher = watcher
+        self.replyScanner = replyScanner
+        self.pinner = pinner
+        self.stagingImporter = stagingImporter
+        self.queue = queue
+        self.access = access
+        self.importsAppGroupStaging = importsAppGroupStaging
+    }
+
+    // MARK: - SyncCoordinating
+
+    /// Begins watching and performs an initial scan. Idempotent.
+    ///
+    /// This is also the foreground hook: call it every time the app becomes
+    /// active. A second call does not start a second watcher — it pokes the one
+    /// that is running and scans.
+    public func start() async {
+        if isStarted == false {
+            isStarted = true
+            startWatching()
+        } else {
+            await pokeWatcher()
+        }
+        _ = try? await performScan()
+    }
+
+    /// Stops watching. The library stays fully usable afterwards.
+    public func stop() async {
+        watchTask?.cancel()
+        watchTask = nil
+        await watcher.stop()
+        isStarted = false
+    }
+
+    /// A full re-scan, as pull-to-refresh triggers.
+    ///
+    /// - Returns: how many documents were newly ingested. Zero is a normal,
+    ///   successful answer.
+    /// - Throws: `.folderUnavailable` when the root cannot be read. Everything
+    ///   else is reported per document through `events()`.
+    public func refresh() async throws -> Int {
+        try await performScan()
+    }
+
+    /// The event stream for the UI. Multiple consumers each get their own
+    /// stream; a consumer that stops listening costs nothing.
+    ///
+    /// Events emitted before a consumer registers are not replayed. That is
+    /// deliberate and safe: every event means "look again", and the library is
+    /// read from Storage rather than from this stream.
+    public nonisolated func events() -> AsyncStream<SyncEvent> {
+        let identifier = UUID()
+        let (stream, continuation) = AsyncStream<SyncEvent>.makeStream()
+        continuation.onTermination = { [weak self] _ in
+            guard let self else { return }
+            Task { await self.removeListener(identifier) }
+        }
+        Task { await self.addListener(identifier, continuation) }
+        return stream
+    }
+
+    /// Writes a bundle to `outbox/`, queueing it when the folder is
+    /// unreachable.
+    ///
+    /// - Returns: where it landed. When the folder was unreachable that is the
+    ///   **queue** directory in the app container, not `outbox/` — the Sent
+    ///   screen says "will send when online" and waits for the
+    ///   `.reviewWritten` event, which is emitted when the bundle really
+    ///   reaches the folder (docs/04-flows.md § F7).
+    /// - Throws: `.outboxWriteFailed` when it could not even be queued.
+    public func send(_ payload: OutboxPayload) async throws -> WrittenReview {
+        let started = access.beginAccess(to: folder)
+        defer { access.endAccess(to: folder, wasStarted: started) }
+
+        do {
+            let written = try await writer.write(payload, to: folder)
+            queue.remove(payload.directoryName)
+            emit(.reviewWritten(documentId: written.documentId, directoryURL: written.directoryURL))
+            return written
+        } catch let error as PencilLoopError {
+            guard case let .folderUnavailable(reason) = error else { throw error }
+            let queued = try queue.enqueue(payload)
+            emit(.folderUnavailable(reason: reason))
+            SyncLog.coordinator.notice("\(payload.directoryName) will be sent when the folder is reachable.")
+            return WrittenReview(
+                documentId: payload.documentId,
+                directoryURL: queued,
+                directoryName: payload.directoryName,
+                writtenAt: Date(),
+                fileCount: payload.files.count,
+                byteCount: payload.files.reduce(0) { $0 + Int64($1.data.count) }
+            )
+        }
+    }
+
+    // MARK: - The reply loop (docs/04-flows.md § F6)
+
+    /// Turns a reply into a new document, with the origin inherited.
+    ///
+    /// The "Open as document" action on the Sent screen. The new document is
+    /// written into `inbox/` like any other — there is one ingest path, not two
+    /// — so it is annotatable, and a review of it goes back to the same
+    /// conversation the original came from.
+    ///
+    /// - Parameter reviewDirectoryName: `<slug>.review`.
+    /// - Returns: the new document's id.
+    /// - Throws: `.nothingToIngest` when there is no reply to open, or whatever
+    ///   ingest threw.
+    @discardableResult
+    public func ingestReply(fromReviewDirectory reviewDirectoryName: String) async throws -> UUID {
+        let started = access.beginAccess(to: folder)
+        defer { access.endAccess(to: folder, wasStarted: started) }
+
+        let existingText = try await writer.readReply(inReviewDirectory: reviewDirectoryName, in: folder)
+        guard let text = existingText, text.isEmpty == false else {
+            throw PencilLoopError.nothingToIngest(folderName: reviewDirectoryName)
+        }
+
+        let sourceFolderName = ReplyScanner.documentFolderName(forReviewDirectory: reviewDirectoryName)
+        let sourceDirectory = folder.inboxURL.appendingPathComponent(sourceFolderName, isDirectory: true)
+        let sourceMetadata = MetadataFile.read(inDirectory: sourceDirectory)
+
+        let baseTitle = sourceMetadata.title ?? MetadataFile.fallbackTitle(forDirectoryNamed: sourceFolderName)
+        let title = "Reply — \(baseTitle)"
+        let now = Date()
+        let folderName = Slug.disambiguated(
+            Slug.folderName(date: now, title: title),
+            existing: InboxScanner.folderNames(in: folder)
+        )
+
+        let metadata = DocumentMetadata(
+            id: UUID().uuidString,
+            title: title,
+            createdAt: now,
+            origin: MetadataFile.inheritedOrigin(from: sourceMetadata),
+            sourceFormat: .markdown
+        )
+        let metadataData = try MetadataFile.encode(metadata)
+        try writeInboxDirectory(named: folderName, files: [
+            (SyncFileNames.sourceMarkdown, Data(text.utf8)),
+            (SyncFileNames.metadata, metadataData)
+        ])
+
+        let directory = folder.inboxURL.appendingPathComponent(folderName, isDirectory: true)
+        guard let item = try await scanner.item(at: directory) else {
+            throw PencilLoopError.nothingToIngest(folderName: folderName)
+        }
+        let pinned = try await pinner.pin(item)
+        let document = try await ingester.ingest(pinned)
+        let summary = try await store.upsert(document)
+        emit(.ingested(documentId: summary.id, title: summary.title))
+        return summary.id
+    }
+
+    // MARK: - Scanning
+
+    /// Coalesces concurrent scans onto one task. A poll that lands during a
+    /// pull-to-refresh waits for it rather than running a second one.
+    private func performScan() async throws -> Int {
+        if let activeScan {
+            return try await activeScan.value
+        }
+        let task = Task<Int, Error> { try await self.scanOnce() }
+        activeScan = task
+        let outcome = await task.result
+        activeScan = nil
+        return try outcome.get()
+    }
+
+    private func scanOnce() async throws -> Int {
+        let started = access.beginAccess(to: folder)
+        defer { access.endAccess(to: folder, wasStarted: started) }
+
+        guard access.isReachableWithinOpenScope(folder) else {
+            let reason = "The sync folder could not be opened. Documents already downloaded are unaffected."
+            emit(.folderUnavailable(reason: reason))
+            throw PencilLoopError.folderUnavailable(reason: reason)
+        }
+        try? access.ensureDirectories(in: folder)
+
+        if importsAppGroupStaging {
+            stagingImporter.importAll(into: folder)
+        }
+        await flushQueue()
+
+        let known = (try? await store.knownFolderNames()) ?? []
+        let items = try await scanner.scan(folder, knownFolderNames: known)
+        emit(.scanStarted(pending: items.count))
+
+        var ingestedCount = 0
+        for item in items {
+            if Task.isCancelled { break }
+            if known.contains(item.folderName), pinner.isPinnedAndCurrent(item) { continue }
+            if await ingest(item) { ingestedCount += 1 }
+        }
+        emit(.scanFinished(ingestedCount: ingestedCount))
+
+        await collectReplies()
+        return ingestedCount
+    }
+
+    /// One directory, all the way to a library row.
+    ///
+    /// Every failure lands on the same path: recorded against the folder name
+    /// so the library can show an error row, and reported as `.ingestFailed`.
+    /// The folder is never deleted and never silently skipped.
+    private func ingest(_ item: InboxItem) async -> Bool {
+        do {
+            let pinned = try await pinner.pin(item)
+            let document = try await ingester.ingest(pinned)
+            let summary = try await store.upsert(document)
+            emit(.ingested(documentId: summary.id, title: summary.title))
+            return true
+        } catch {
+            let reason = SyncCoordinator.message(for: error)
+            SyncLog.coordinator.error("Ingest failed for \(item.folderName): \(reason)")
+            try? await store.recordIngestFailure(folderName: item.folderName, reason: reason)
+            emit(.ingestFailed(folderName: item.folderName, reason: reason))
+            return false
+        }
+    }
+
+    /// Sends anything that was queued while the folder was away. Stops at the
+    /// first failure — if the folder is still unreachable, the rest will not
+    /// fare better, and they stay queued.
+    private func flushQueue() async {
+        let waiting = queue.queuedPayloads()
+        guard waiting.isEmpty == false else { return }
+        for payload in waiting {
+            do {
+                let written = try await writer.write(payload, to: folder)
+                queue.remove(payload.directoryName)
+                emit(.reviewWritten(documentId: written.documentId, directoryURL: written.directoryURL))
+            } catch {
+                SyncLog.coordinator.notice("\(payload.directoryName) is still waiting to be sent.")
+                return
+            }
+        }
+    }
+
+    // MARK: - Replies
+
+    private func collectRepliesWithAccess() async {
+        let started = access.beginAccess(to: folder)
+        defer { access.endAccess(to: folder, wasStarted: started) }
+        await collectReplies()
+    }
+
+    /// The caller must already hold access.
+    private func collectReplies() async {
+        for reply in replyScanner.scan(folder) {
+            let key = "\(reply.reviewDirectoryName)@\(reply.modifiedAt.timeIntervalSince1970)"
+            if deliveredReplies.contains(key) { continue }
+            deliveredReplies.insert(key)
+
+            let found = try? await store.documentId(forFolderName: reply.documentFolderName)
+            guard let documentId = found ?? nil else {
+                SyncLog.coordinator.notice("A reply arrived for \(reply.documentFolderName), which is not in the library.")
+                continue
+            }
+            let read = try? await writer.readReply(inReviewDirectory: reply.reviewDirectoryName, in: folder)
+            guard let text = read ?? nil else { continue }
+
+            try? await store.recordReply(documentId: documentId, text: text, receivedAt: reply.modifiedAt)
+            emit(.replyReceived(documentId: documentId, replyURL: reply.replyURL))
+        }
+    }
+
+    // MARK: - Watching
+
+    private func startWatching() {
+        watchTask?.cancel()
+        let stream = watcher.events(for: folder)
+        watchTask = Task { [weak self] in
+            for await event in stream {
+                guard let self else { return }
+                await self.handle(event)
+            }
+        }
+    }
+
+    private func handle(_ event: FolderEvent) async {
+        switch event {
+        case .inboxChanged:
+            _ = try? await performScan()
+        case let .inboxRemoved(folderName):
+            // The document stays in the library. Losing the folder costs you
+            // new documents, never existing ones (docs/02-spec.md).
+            SyncLog.coordinator.notice("\(folderName) is no longer in the inbox; the document stays in the library.")
+        case .replyAppeared:
+            await collectRepliesWithAccess()
+        case let .folderUnavailable(reason):
+            emit(.folderUnavailable(reason: reason))
+        case .folderRestored:
+            await forgetScanMemory()
+            _ = try? await performScan()
+        }
+    }
+
+    private func pokeWatcher() async {
+        guard let polling = watcher as? PollingFolderWatcher else { return }
+        await polling.pokeNow()
+    }
+
+    /// After the folder has been away, anything could have changed while we
+    /// were not looking, so the scanner's memory of what it last saw is thrown
+    /// out and every folder is examined again.
+    private func forgetScanMemory() async {
+        guard let concrete = scanner as? InboxScanner else { return }
+        await concrete.forgetSeenFolders()
+    }
+
+    // MARK: - Events
+
+    private func addListener(_ identifier: UUID, _ continuation: AsyncStream<SyncEvent>.Continuation) {
+        listeners[identifier] = continuation
+    }
+
+    private func removeListener(_ identifier: UUID) {
+        listeners[identifier] = nil
+    }
+
+    private func emit(_ event: SyncEvent) {
+        for continuation in listeners.values {
+            continuation.yield(event)
+        }
+    }
+
+    // MARK: - Internals
+
+    /// Writes a new directory into `inbox/` the way every other writer of this
+    /// folder does: a hidden sibling, then a coordinated rename
+    /// (integrations/README.md § Conventions).
+    private func writeInboxDirectory(named folderName: String, files: [(String, Data)]) throws {
+        let manager = FileManager.default
+        let staging = folder.inboxURL.appendingPathComponent(
+            SyncFileNames.stagingName(for: folderName, token: UUID().uuidString),
+            isDirectory: true
+        )
+        let destination = folder.inboxURL.appendingPathComponent(folderName, isDirectory: true)
+        do {
+            try manager.createDirectory(at: staging, withIntermediateDirectories: true)
+            for (name, data) in files {
+                try data.write(to: staging.appendingPathComponent(name, isDirectory: false), options: [.atomic])
+            }
+            try CoordinatedFileAccess.move(from: staging, to: destination) { movableSource, replaceableDestination in
+                if manager.fileExists(atPath: replaceableDestination.path) {
+                    _ = try manager.replaceItemAt(replaceableDestination, withItemAt: movableSource)
+                    return
+                }
+                try manager.moveItem(at: movableSource, to: replaceableDestination)
+            }
+        } catch {
+            try? manager.removeItem(at: staging)
+            throw PencilLoopError.folderUnavailable(
+                reason: "\(folderName) could not be written to the inbox. \(error.localizedDescription)"
+            )
+        }
+    }
+
+    /// A sentence for the library's error row.
+    static func message(for error: Error) -> String {
+        if let known = error as? PencilLoopError { return known.message }
+        return error.localizedDescription
+    }
+}

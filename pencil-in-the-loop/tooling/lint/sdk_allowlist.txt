@@ -108,3 +108,30 @@ Component Components Style Storage Value Key Kind Entry
 # Our own module names, for qualified references like Core.Anchor
 Core Storage Sync Ingest Annotate Export AppUI PencilLoopKit Markdown
 Foundation XCTest SwiftData SwiftUI UIKit PencilKit PDFKit Speech
+
+# Speech, iOS 26 (added by U5). SpeechAnalyzer's input element type and its
+# drain-and-finish method both carry Apple's spelling; the method is here rather
+# than in the type list because check_style.py exempts on token, not on kind.
+AnalyzerInput AssetInventory finalizeAndFinishThroughEndOfInput
+
+# Build flags. Not types at all — compilation-condition names read by check_decls
+# as type references because they are capitalised. See U5's report: the tidier
+# home for these is NON_TYPES in check_decls.py.
+PENCILLOOP_LEGACY_SPEECH PENCILLOOP_STROKE_RECOGNIZER
+
+# SwiftData migration + Foundation Predicate, and the `T.Type` metatype
+# spelling. Added by Wave 1 U1 (Storage): the `@ModelActor` store fetches with
+# `#Predicate` and the schema is versioned, and none of these six names could be
+# written any other way. Every one is Apple's or the language's, added per the
+# instruction at the top of this file. `Version` is `Schema.Version`.
+Predicate SchemaMigrationPlan VersionedSchema MigrationStage Version Type
+
+# swift-markdown node types (Apple, first-party — docs/03-architecture.md § Stack).
+# Referenced only inside Sources/Ingest/Adapters/SwiftMarkdownAdapter.swift, the
+# one file permitted to `import Markdown`; check_imports.py enforces that, and
+# these entries stop check_decls.py reporting the parser's own vocabulary as
+# undeclared. Added by U3 — see that unit's report.
+Document Markup
+Heading Paragraph CodeBlock HTMLBlock BlockQuote ThematicBreak
+UnorderedList OrderedList Table
+Emphasis Strong InlineCode Strikethrough Link SoftBreak LineBreak
