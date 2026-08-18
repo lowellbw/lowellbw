@@ -147,3 +147,50 @@ Document Markup
 Heading Paragraph CodeBlock HTMLBlock BlockQuote ThematicBreak
 UnorderedList OrderedList Table
 Emphasis Strong InlineCode Strikethrough Link SoftBreak LineBreak
+
+# SwiftUI and standard-library names used by Wave 2 U7 (Library, First Run,
+# Settings). All Apple's, none of ours.
+#
+# `Preview` is the `#Preview` macro rather than a type: check_decls.py reads any
+# capitalised word of three or more characters as a type reference, and every
+# view in the app is required to have one (Wave 2 briefs). Listed here for the
+# same reason `AnalyzerInput` is — it is Apple's name, and the check is a token
+# check.
+Picker EmptyView Preview
+WritableKeyPath
+
+# SwiftUI, ObjC runtime and UIKit gesture spellings. Added by Wave 2 U9
+# (comment capture).
+#
+# `Circle` is the comment marker — docs/01-design-principles.md asks for a small
+# filled circle and there is no other way to draw one. `Selector` is the type of
+# a target/action pair, which is how a `UIGestureRecognizer` is constructed.
+#
+# The rest are Apple's own American spellings on the gesture path, and none of
+# them can be written any other way: `gestureRecognizer` and
+# `shouldRecognizeSimultaneouslyWith` are the base name and the argument label of
+# a `UIGestureRecognizerDelegate` method, so they are part of the selector;
+# `addGestureRecognizer` / `removeGestureRecognizer` are `UIView`'s; and
+# `drawingGestureRecognizer` is `PKCanvasView`'s, which is what a comment gesture
+# disables for one runloop turn to take back the dot stroke a stationary Pencil
+# press has already drawn (docs/02-spec.md § S2).
+Circle Selector
+UIGestureRecognizerDelegate gestureRecognizer addGestureRecognizer
+removeGestureRecognizer drawingGestureRecognizer shouldRecognizeSimultaneouslyWith
+
+# Qualified: allowed only as members of the type named, never as bare words.
+# `Squeeze` and `TouchType` are both words a typo could land on.
+UIPencilInteraction.Squeeze UITouch.TouchType
+
+# SwiftUI toolbar building and one more UIKit gesture spelling. Added by Wave 2
+# U8 (Reader).
+#
+# `ToolbarContent` and `ToolbarContentBuilder` are the protocol and the result
+# builder behind `.toolbar { … }`; a toolbar factored into its own property has
+# to name both, and docs/01-design-principles.md § 3 requires the standard
+# toolbar rather than a hand-rolled bar. `UIPanGestureRecognizer` is Apple's,
+# alongside the tap and long-press spellings already listed above — the reader
+# uses one, finger-only and non-blocking, to notice that a scroll has started so
+# the chrome can hide (docs/01-design-principles.md § 4).
+ToolbarContent ToolbarContentBuilder
+UIPanGestureRecognizer
