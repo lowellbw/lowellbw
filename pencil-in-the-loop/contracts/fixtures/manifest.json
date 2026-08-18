@@ -29,5 +29,15 @@
       "bytes": 1105,
       "sha256": "84e1f770669beea59e26bf750437d01f0200ddc0657555c621feabb68a7f1282"
     }
-  ]
+  ],
+  "complete": true,
+  "origin": {
+    "kind": "cowork",
+    "sessionId": "8f3c1d…",
+    "threadTitle": "Q3 platform planning",
+    "returnPath": {
+      "type": "poke",
+      "triggerId": "trig_…"
+    }
+  }
 }

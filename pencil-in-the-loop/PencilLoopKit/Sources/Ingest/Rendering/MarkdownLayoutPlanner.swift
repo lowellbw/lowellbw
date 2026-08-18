@@ -78,7 +78,7 @@ struct MarkdownLayoutPlanner {
                     sourceRange: range
                 ))
 
-            case let .codeBlock(_, code, range):
+            case let .codeBlock(_, code, _, range):
                 let text = attributedCode(code, range: range)
                 guard text.length > 0 else { continue }
                 items.append(MarkdownLayoutItem(

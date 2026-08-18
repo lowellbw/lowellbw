@@ -28,8 +28,18 @@ public struct DocumentIngestor: DocumentIngesting {
 
     /// Where pinned copies live: one subdirectory per `folderName`.
     ///
-    /// Injected rather than derived, because the app container's layout belongs
-    /// to Storage and this module must not invent a second opinion about it.
+    /// Defaults to `DocumentContainer.documentsRoot()` — the app container's
+    /// one document root, defined in Core because Storage records paths
+    /// relative to it and Sync pins into it. Still injectable so a test can
+    /// point it at a temporary directory; nothing else should pass anything
+    /// else, because a document written outside that root is recorded by its
+    /// absolute path and stops opening after a reinstall
+    /// (DocumentContainer.swift header).
+    ///
+    /// Sync has normally already pinned the item into this very directory, so
+    /// the sources this ingestor is handed and the targets it writes are often
+    /// the same files. That is deliberate — one copy of a document, not two —
+    /// and `materialise(from:to:)` handles it.
     public let containerRoot: URL
 
     public let geometry: PageGeometry
@@ -42,7 +52,7 @@ public struct DocumentIngestor: DocumentIngesting {
     private let log = Logger(subsystem: "co.pencil-loop", category: "ingest")
 
     public init(
-        containerRoot: URL,
+        containerRoot: URL = DocumentContainer.documentsRoot(),
         geometry: PageGeometry = .annotationFriendly,
         parser: any MarkdownParsing = SwiftMarkdownAdapter(),
         renderer: any MarkdownPDFRendering = MarkdownPDFRenderer(),
@@ -82,7 +92,7 @@ public struct DocumentIngestor: DocumentIngesting {
         var markdownURL: URL?
         var markdownSource: String?
         if let source = item.sourceMarkdownURL {
-            let target = destination.appendingPathComponent(IngestFileNames.markdown)
+            let target = destination.appendingPathComponent(DocumentFileNames.sourceMarkdown)
             let data = try materialise(from: source, to: target, folderName: item.folderName)
             markdownURL = target
             markdownSource = String(data: data, encoding: .utf8)
@@ -138,7 +148,7 @@ public struct DocumentIngestor: DocumentIngesting {
     /// `DocumentMetadata.empty`, which resolves to a manually added document
     /// with no return path — readable, just not routable.
     public func metadata(at url: URL) async -> DocumentMetadata {
-        let file = url.appendingPathComponent(IngestFileNames.meta)
+        let file = url.appendingPathComponent(DocumentFileNames.metadata)
         guard let data = try? Data(contentsOf: file) else { return .empty }
         return extractor.metadata(fromMetaJSON: data)
     }
@@ -163,13 +173,13 @@ public struct DocumentIngestor: DocumentIngesting {
         destination: URL,
         folderName: String
     ) throws -> Prepared {
-        let target = destination.appendingPathComponent(IngestFileNames.pdf)
+        let target = destination.appendingPathComponent(DocumentFileNames.document)
         _ = try materialise(from: source, to: target, folderName: folderName)
         let imported = try importer.read(pdfAt: target, folderName: folderName)
 
         var map: SourceMap?
         if let sourceMapURL {
-            let mapTarget = destination.appendingPathComponent(IngestFileNames.sourceMap)
+            let mapTarget = destination.appendingPathComponent(DocumentFileNames.sourceMap)
             if let data = try? materialise(from: sourceMapURL, to: mapTarget, folderName: folderName) {
                 map = try? ContractCoding.decoder().decode(SourceMap.self, from: data)
             }
@@ -202,7 +212,7 @@ public struct DocumentIngestor: DocumentIngesting {
 
         let rendered = try renderer.render(document, geometry: geometry)
 
-        let pdfTarget = destination.appendingPathComponent(IngestFileNames.pdf)
+        let pdfTarget = destination.appendingPathComponent(DocumentFileNames.document)
         do {
             try rendered.pdfData.write(to: pdfTarget, options: .atomic)
         } catch {
@@ -217,7 +227,7 @@ public struct DocumentIngestor: DocumentIngesting {
         // matching (SourceMap.swift header).
         if let data = try? ContractCoding.encoder().encode(rendered.sourceMap) {
             try? data.write(
-                to: destination.appendingPathComponent(IngestFileNames.sourceMap),
+                to: destination.appendingPathComponent(DocumentFileNames.sourceMap),
                 options: .atomic
             )
         }
@@ -252,15 +262,27 @@ public struct DocumentIngestor: DocumentIngesting {
     /// real file before it is read; the call fails harmlessly for anything that
     /// is not in a ubiquitous container.
     ///
+    /// **When source and destination are the same file, nothing is written.**
+    /// That is the normal case now that Sync pins into the same document
+    /// directory this materialises into: the bytes are already here, already
+    /// verified against the size the provider reported, and rewriting them
+    /// would risk truncating a good file to save nothing.
+    ///
     // WAVE 2 (U3): wrap the read in NSFileCoordinator once Sync's security
     // scope helper lands, so a provider writing the folder mid-scan cannot hand
     // us a half-written file.
     @discardableResult
     private func materialise(from source: URL, to destination: URL, folderName: String) throws -> Data {
-        try? FileManager.default.startDownloadingUbiquitousItem(at: source)
+        let isSameFile = source.standardizedFileURL.path(percentEncoded: false)
+            == destination.standardizedFileURL.path(percentEncoded: false)
+        if isSameFile == false {
+            try? FileManager.default.startDownloadingUbiquitousItem(at: source)
+        }
         do {
             let data = try Data(contentsOf: source, options: [.uncached])
-            try data.write(to: destination, options: .atomic)
+            if isSameFile == false {
+                try data.write(to: destination, options: .atomic)
+            }
             return data
         } catch {
             throw PencilLoopError.materialisationFailed(

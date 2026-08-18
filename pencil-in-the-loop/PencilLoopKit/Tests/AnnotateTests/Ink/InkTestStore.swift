@@ -19,6 +19,7 @@ actor InkTestStore: DocumentStoring {
     private(set) var drawingWrites: [DrawingWrite] = []
     private(set) var recognisedWrites: [String?] = []
     private(set) var pageReadCount = 0
+    private(set) var singlePageReadCount = 0
     private var storedPages: [PageSnapshot]
     private var failWrites: Bool
 
@@ -100,6 +101,13 @@ actor InkTestStore: DocumentStoring {
         return self.storedPages.sorted { $0.pageIndex < $1.pageIndex }
     }
 
+    /// Counted separately from `pages(documentId:)`, because "one page's ink
+    /// costs one page's read" is exactly the property the new member exists for.
+    func drawingData(pageIndex: Int, documentId: UUID) throws -> Data? {
+        self.singlePageReadCount += 1
+        return self.storedPages.first { $0.pageIndex == pageIndex }?.drawingData
+    }
+
     // MARK: - Comments
 
     @discardableResult
@@ -118,6 +126,9 @@ actor InkTestStore: DocumentStoring {
 
     func deleteComment(id: UUID) throws {}
 
+    @discardableResult
+    func undoLastCommentDeletion() throws -> CommentSnapshot? { nil }
+
     func comments(documentId: UUID) throws -> [CommentSnapshot] { [] }
 
     // MARK: - Review lifecycle
@@ -125,6 +136,12 @@ actor InkTestStore: DocumentStoring {
     func recordReviewSent(documentId: UUID, at date: Date, directoryName: String) throws {}
 
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {}
+
+    // MARK: - Reading time
+
+    func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws {}
+
+    func readingSeconds(documentId: UUID) throws -> TimeInterval { 0 }
 
     // MARK: - Housekeeping
 

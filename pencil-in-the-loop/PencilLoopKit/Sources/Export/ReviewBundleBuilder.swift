@@ -31,15 +31,10 @@ import Core
 /// PNG would not encode is not an acceptable trade.
 public struct ReviewBundleBuilder: ReviewBundleBuilding {
 
-    /// The prose payload's filename. Core freezes `review.json` and
-    /// `manifest.json` but not this one; see the change request in this unit's
-    /// report.
-    public static let reviewMarkdownFileName = "review.md"
-
-    /// Where the whole document is written when the user asks for it to be
-    /// attached. Same name it has under `inbox/`, so a tool that already knows
-    /// the inbox layout needs no new rule.
-    public static let documentFileName = "document.pdf"
+    // The bundle's own file names are frozen in Core: `review.md` and
+    // `document.pdf` as `DocumentFileNames.reviewMarkdown` and
+    // `DocumentFileNames.document`, `review.json` on `ReviewBundle`,
+    // `manifest.json` on `BundleManifest`.
 
     private let inkCropper: any InkCropping
     private let markdownWriter: ReviewMarkdownWriter
@@ -83,7 +78,7 @@ public struct ReviewBundleBuilder: ReviewBundleBuilding {
         }
         files.append(
             BundleFile(
-                relativePath: ReviewBundleBuilder.reviewMarkdownFileName,
+                relativePath: DocumentFileNames.reviewMarkdown,
                 data: markdownData
             )
         )
@@ -104,7 +99,7 @@ public struct ReviewBundleBuilder: ReviewBundleBuilding {
             if let documentData = try? Data(contentsOf: draft.pdfURL) {
                 files.append(
                     BundleFile(
-                        relativePath: ReviewBundleBuilder.documentFileName,
+                        relativePath: DocumentFileNames.document,
                         data: documentData
                     )
                 )
@@ -122,7 +117,8 @@ public struct ReviewBundleBuilder: ReviewBundleBuilding {
             files: files,
             documentId: draft.externalDocumentId,
             reviewFolder: directoryName,
-            createdAt: draft.reviewedAt
+            createdAt: draft.reviewedAt,
+            origin: draft.origin
         )
         let manifestData = try manifestWriter.data(for: manifest)
         files.append(BundleFile(relativePath: BundleManifest.fileName, data: manifestData))

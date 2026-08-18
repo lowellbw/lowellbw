@@ -80,7 +80,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
     /// with the same numbering, and name the same image files.
     func testTheProseAndTheJsonNameTheSameFilesAndComments() async throws {
         let payload = try await Self.builder().build(Self.draft())
-        let markdown = try Self.text(at: ReviewBundleBuilder.reviewMarkdownFileName, in: payload)
+        let markdown = try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload)
         let bundleFile = try XCTUnwrap(payload.files.first { $0.relativePath == ReviewBundle.fileName })
         let bundle = try ContractCoding.decoder().decode(ReviewBundle.self, from: bundleFile.data)
 
@@ -104,7 +104,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
         let payload = try await builder.build(draft)
         let copied = try await builder.reviewMarkdown(draft)
 
-        XCTAssertEqual(copied, try Self.text(at: ReviewBundleBuilder.reviewMarkdownFileName, in: payload))
+        XCTAssertEqual(copied, try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload))
     }
 
     // MARK: - Ink
@@ -129,7 +129,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
     func testAPageThatWillNotRenderIsSkippedAndTheReviewSurvives() async throws {
         let cropper = StubInkCropper(failingPages: [2])
         let payload = try await Self.builder(cropper: cropper).build(Self.draft())
-        let markdown = try Self.text(at: ReviewBundleBuilder.reviewMarkdownFileName, in: payload)
+        let markdown = try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload)
 
         XCTAssertEqual(payload.files.map { $0.relativePath }, [
             "review.md", "review.json", "ink/page-01.png", "manifest.json"
@@ -142,7 +142,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
     func testEveryInkPageFailingStillProducesAReview() async throws {
         let cropper = StubInkCropper(failingPages: [0, 2])
         let payload = try await Self.builder(cropper: cropper).build(Self.draft())
-        let markdown = try Self.text(at: ReviewBundleBuilder.reviewMarkdownFileName, in: payload)
+        let markdown = try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload)
 
         XCTAssertEqual(payload.files.map { $0.relativePath }, ["review.md", "review.json", "manifest.json"])
         XCTAssertFalse(markdown.contains("## Handwritten pages"))
@@ -161,7 +161,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
     func testRecognisedInkIsCarriedThroughToBothHalves() async throws {
         let pages = [ExportTestFixtures.inkedPage(0, recognisedInk: "do we? check the mobile SDK")]
         let payload = try await Self.builder().build(Self.draft(pages: pages))
-        let markdown = try Self.text(at: ReviewBundleBuilder.reviewMarkdownFileName, in: payload)
+        let markdown = try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload)
         let bundleFile = try XCTUnwrap(payload.files.first { $0.relativePath == ReviewBundle.fileName })
         let bundle = try ContractCoding.decoder().decode(ReviewBundle.self, from: bundleFile.data)
 
@@ -204,7 +204,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: markdownURL) }
 
         let payload = try await Self.builder().build(Self.draft(sourceMarkdownURL: markdownURL))
-        let markdown = try Self.text(at: ReviewBundleBuilder.reviewMarkdownFileName, in: payload)
+        let markdown = try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload)
 
         XCTAssertTrue(markdown.contains("position approximate"), markdown)
     }
@@ -225,11 +225,11 @@ final class ReviewBundleBuilderTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: pdfURL) }
 
         let without = try await Self.builder().build(Self.draft(pdfURL: pdfURL))
-        XCTAssertFalse(without.files.contains { $0.relativePath == ReviewBundleBuilder.documentFileName })
+        XCTAssertFalse(without.files.contains { $0.relativePath == DocumentFileNames.document })
 
         let include = ReviewIncludeOptions(fullDocument: true)
         let with = try await Self.builder().build(Self.draft(include: include, pdfURL: pdfURL))
-        XCTAssertTrue(with.files.contains { $0.relativePath == ReviewBundleBuilder.documentFileName })
+        XCTAssertTrue(with.files.contains { $0.relativePath == DocumentFileNames.document })
         XCTAssertEqual(with.files.last?.relativePath, BundleManifest.fileName)
     }
 
@@ -239,8 +239,8 @@ final class ReviewBundleBuilderTests: XCTestCase {
         let payload = try await Self.builder().build(
             Self.draft(include: include, pdfURL: URL(fileURLWithPath: "/no/such/document.pdf"))
         )
-        XCTAssertTrue(payload.files.contains { $0.relativePath == ReviewBundleBuilder.reviewMarkdownFileName })
-        XCTAssertFalse(payload.files.contains { $0.relativePath == ReviewBundleBuilder.documentFileName })
+        XCTAssertTrue(payload.files.contains { $0.relativePath == DocumentFileNames.reviewMarkdown })
+        XCTAssertFalse(payload.files.contains { $0.relativePath == DocumentFileNames.document })
     }
 
     // MARK: - Support

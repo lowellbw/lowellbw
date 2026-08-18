@@ -156,6 +156,22 @@ public protocol SpeechTranscribing: Sendable {
     /// not when the download completes. Poll `assetState()` for progress.
     func prepareAssets() async
 
+    /// Opens the audio session and starts the engine, before the gesture that
+    /// will use it has resolved.
+    ///
+    /// The first token is budgeted at 400ms from press (docs/03-architecture.md
+    /// § Performance targets) and starting a speech session costs most of that,
+    /// so the caller warms the engine on touch-down and calls
+    /// `transcribe(contextualTerms:)` when the long press fires
+    /// (`GestureTiming.longPressDuration` later).
+    ///
+    /// **Idempotent, non-throwing, best-effort.** Calling it twice is a no-op,
+    /// calling it while a recording is running is a no-op, and an engine that
+    /// cannot warm up says nothing — the failure surfaces from `transcribe`,
+    /// where there is a UI to show it. A caller must never wait on this or
+    /// branch on it; it is an optimisation, and dictation works without it.
+    func prewarm() async
+
     /// Starts recording and streams updates.
     ///
     /// - Parameter contextualTerms: document jargon — identifiers, capitalised
@@ -227,10 +243,27 @@ public protocol FolderAccessing: Sendable {
 
     /// Resolves a persisted bookmark.
     ///
-    /// - Throws: `.bookmarkStale` when the bookmark resolved but is stale — the
-    ///   caller mints a fresh one from the returned folder and saves it.
+    /// - Throws: `.bookmarkStale` when the bookmark resolved but has gone
+    ///   stale. A throwing call returns no folder, so the caller cannot mint a
+    ///   replacement "from the returned folder" — it calls
+    ///   `refreshedFolder(bookmark:)`, which resolves the stale bookmark
+    ///   anyway, mints a fresh one and hands back both. Persist the new
+    ///   bookmark then.
     ///   `.folderUnavailable` when it cannot be resolved at all.
     func resolveFolder(bookmark: Data) throws -> SyncFolder
+
+    /// Re-resolves a stale bookmark and mints a replacement.
+    ///
+    /// The recovery half of `resolveFolder(bookmark:)`. Resolving a stale
+    /// bookmark still yields a usable URL; what it does not yield is a bookmark
+    /// that will resolve next launch, and that is what this mints.
+    ///
+    /// - Returns: the folder, with `bookmark` set to the fresh one — or to the
+    ///   one passed in when minting failed, which is survivable for this launch
+    ///   and means the user is asked for the folder again on the next one.
+    /// - Throws: `.folderUnavailable` when the bookmark will not resolve even
+    ///   in stale form.
+    func refreshedFolder(bookmark: Data) throws -> SyncFolder
 
     /// Runs `body` with the security scope open, closing it afterwards even if
     /// `body` throws.
@@ -238,6 +271,19 @@ public protocol FolderAccessing: Sendable {
     /// - Note: not re-entrant across processes. The share extension opens its
     ///   own scope on the App Group container.
     func withAccess<T: Sendable>(to folder: SyncFolder, perform body: @Sendable (SyncFolder) throws -> T) throws -> T
+
+    /// The same, for work that suspends.
+    ///
+    /// Scanning, pinning and writing all `await` in the middle, and a
+    /// synchronous closure cannot hold the scope across a suspension — which is
+    /// why Sync kept a concrete `beginAccess`/`endAccess` pair and could not be
+    /// held as `any FolderAccessing`. Prefer this overload for anything that
+    /// touches the folder.
+    ///
+    /// - Note: same re-entrancy rule as the synchronous overload, and it
+    ///   matters more here: the scope stays open for the whole of `body`, so do
+    ///   not open a second one inside it.
+    func withAccess<T: Sendable>(to folder: SyncFolder, perform body: @Sendable (SyncFolder) async throws -> T) async throws -> T
 
     /// Whether the root is reachable right now. Never throws; a false answer is
     /// information, not an error.
@@ -248,8 +294,11 @@ public protocol FolderAccessing: Sendable {
 ///
 /// **On failure:** throws `PencilLoopError.folderUnavailable` when the folder
 /// itself cannot be read. A single unreadable subdirectory is skipped and
-/// reported through `SyncEvent.ingestFailed`, never propagated — one bad folder
-/// must not stop the scan.
+/// returned in `InboxScanResult.skipped`, never propagated — one bad folder
+/// must not stop the scan. The coordinator turns each skip into a
+/// `SyncEvent.ingestFailed` and an error row; a scanner that returned a bare
+/// array had no way to say a folder had been skipped at all, so nobody ever
+/// learned about it.
 ///
 /// Scanning is cheap and idempotent. Pull-to-refresh calls it, the watcher calls
 /// it, and first launch calls it.
@@ -260,9 +309,10 @@ public protocol InboxScanning: Sendable {
     ///   - knownFolderNames: names already in the library. Implementations use
     ///     this to skip work, and must still return an item for a known folder
     ///     whose contents changed since `modifiedAt`.
-    /// - Returns: items in folder-name order, which is chronological given the
-    ///   date prefix.
-    func scan(_ folder: SyncFolder, knownFolderNames: Set<String>) async throws -> [InboxItem]
+    /// - Returns: the items in folder-name order, which is chronological given
+    ///   the date prefix, and every subdirectory that was skipped with the
+    ///   reason it was skipped.
+    func scan(_ folder: SyncFolder, knownFolderNames: Set<String>) async throws -> InboxScanResult
 
     /// Examines one directory, for the watcher's targeted case.
     ///
@@ -353,6 +403,22 @@ public protocol SyncCoordinating: Sendable {
     ///
     /// - Returns: where it landed, or throws when it could not even be queued.
     func send(_ payload: OutboxPayload) async throws -> WrittenReview
+
+    /// Turns an agent's `reply.md` into a new document, with the origin
+    /// inherited — the "Open as document" action on the Sent screen
+    /// (docs/04-flows.md § F6).
+    ///
+    /// The reply is written into `inbox/` like anything else, because there is
+    /// one ingest path and not two. The new document is annotatable, and a
+    /// review of it goes back to the conversation the original came from.
+    ///
+    /// - Parameter reviewDirectoryName: `<slug>.review`.
+    /// - Returns: the new document's id.
+    /// - Throws: `.nothingToIngest` when there is no reply to open yet, or
+    ///   whatever ingest threw. User-initiated, so the caller has somewhere to
+    ///   show it.
+    @discardableResult
+    func ingestReply(fromReviewDirectory reviewDirectoryName: String) async throws -> UUID
 }
 
 // MARK: - Storage
@@ -433,6 +499,18 @@ public protocol DocumentStoring: Actor {
     /// Every page's ink state, in page order.
     func pages(documentId: UUID) throws -> [PageSnapshot]
 
+    /// One page's archived `PKDrawing` bytes.
+    ///
+    /// - Returns: nil when the page has no ink, and nil for a page index the
+    ///   document does not have. Reads of a missing document return nil rather
+    ///   than throwing, like every other read here.
+    ///
+    /// Exists because `pages(documentId:)` returns every page's `drawingData`:
+    /// drawing one page of a 300-page document meant fetching the whole ink
+    /// corpus to render one canvas. Performance, not correctness — a caller
+    /// that already holds the snapshots should keep using them.
+    func drawingData(pageIndex: Int, documentId: UUID) throws -> Data?
+
     // Comments
 
     /// Inserts a comment, minting its id and timestamp.
@@ -442,10 +520,31 @@ public protocol DocumentStoring: Actor {
     /// Edits the text of an existing comment (review sheet, tap to edit).
     func updateComment(id: UUID, text: String) throws
 
-    /// Deletes a comment. Undo is the caller's business — the store has no
-    /// undo stack, and "nothing is destructive without undo" is satisfied by
-    /// the UI holding the snapshot and re-adding it (docs/02-spec.md).
+    /// Deletes a comment, undoably for the session.
+    ///
+    /// **Soft.** The row is marked deleted and pushed onto the store's undo
+    /// stack; it stops appearing in `comments(documentId:)` and stops counting
+    /// towards `DocumentSummary.commentCount` immediately.
+    /// `undoLastCommentDeletion()` puts it back exactly as it was.
+    ///
+    /// The undo cannot be done by the caller holding the snapshot and re-adding
+    /// it: `addComment(_:documentId:)` mints a new id and a new timestamp, so
+    /// the restored comment is a different comment — every marker drawn against
+    /// the old id, and every reference to it in a sent review, points at
+    /// nothing. "Nothing is destructive without undo" (docs/02-spec.md
+    /// § Cross-cutting) needs the store to do it.
+    ///
+    /// - Throws: `.commentNotFound` when the id is unknown.
     func deleteComment(id: UUID) throws
+
+    /// Restores the most recently deleted comment, with its original id,
+    /// timestamp and anchor.
+    ///
+    /// - Returns: the restored comment, or nil when nothing has been deleted in
+    ///   this session. An empty undo stack is an answer, not a failure — a UI
+    ///   may call this on a shake or a button without checking first.
+    @discardableResult
+    func undoLastCommentDeletion() throws -> CommentSnapshot?
 
     /// In document order: page, then vertical position within the page.
     func comments(documentId: UUID) throws -> [CommentSnapshot]
@@ -458,6 +557,27 @@ public protocol DocumentStoring: Actor {
 
     /// Stores a reply an agent wrote (docs/04-flows.md § F6).
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws
+
+    // Reading time
+
+    /// Adds to a document's accumulated reading time.
+    ///
+    /// Feeds `ReviewDraft.timeSpent` and the review sheet's subtitle
+    /// (docs/02-spec.md § S4). The reader accumulates while a document is open
+    /// and hands over whole intervals; nothing here is a timer.
+    ///
+    /// Negative, zero and non-finite values are ignored rather than corrupting
+    /// the total. Frequent — implementations should coalesce, like
+    /// `setLastReadPage(_:documentId:)`.
+    ///
+    /// - Throws: `.documentNotFound` when the id is unknown.
+    func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws
+
+    /// Accumulated reading time in seconds.
+    ///
+    /// - Returns: zero for a document that has never been opened.
+    /// - Throws: `.documentNotFound` when the id is unknown.
+    func readingSeconds(documentId: UUID) throws -> TimeInterval
 
     // Housekeeping
 

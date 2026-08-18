@@ -49,10 +49,14 @@ TYPE_REF = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,})\b")
 
 IMPORT_LINE = re.compile(r"^\s*(?:@\w+\s+)*import\b")
 
-# Words that appear capitalised in code without being types.
+# Words that appear capitalised in code without being types. Compilation
+# condition names live here rather than in sdk_allowlist.txt: they are not
+# Apple's types, they are not types at all, and listing them as SDK names told
+# check_style.py to exempt them from the spelling glossary as a side effect.
 NON_TYPES = {
     "MARK", "SAFETY", "WAVE", "OK", "TODO", "JSON", "PNG", "PDF", "URL", "UUID",
     "SHA", "UTF", "ASCII", "API", "IR", "UI", "SAME", "THREAD", "NEW",
+    "PENCILLOOP_STROKE_RECOGNIZER", "PENCILLOOP_LEGACY_SPEECH",
 }
 
 
@@ -185,6 +189,18 @@ def declarations(code):
         depth += line.count("{") - line.count("}")
 
 
+def qualified_name(line, start, name):
+    """`Qualifier.Name` when the reference is a member access, else `name`."""
+    if start == 0 or line[start - 1] != ".":
+        return name
+    end = start - 1
+    begin = end
+    while begin > 0 and (line[begin - 1].isalnum() or line[begin - 1] == "_"):
+        begin -= 1
+    qualifier = line[begin:end]
+    return "{}.{}".format(qualifier, name) if qualifier else name
+
+
 def looks_like_sdk(name, sdk_names):
     if name in sdk_names or name in NON_TYPES:
         return True
@@ -260,6 +276,12 @@ def main():
             for match in TYPE_REF.finditer(line):
                 name = match.group(1)
                 if name in known or looks_like_sdk(name, sdk_names):
+                    continue
+                # A member of a qualified name — `Schema.Version`,
+                # `VersionedSchema.Type` — is allow-listed as `Qualifier.Member`
+                # rather than as a bare name, so that allowing one spelling in
+                # one place does not allow it everywhere in the repo.
+                if qualified_name(line, match.start(), name) in sdk_names:
                     continue
                 if name in seen:
                     continue

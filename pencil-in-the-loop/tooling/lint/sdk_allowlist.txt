@@ -109,22 +109,34 @@ Component Components Style Storage Value Key Kind Entry
 Core Storage Sync Ingest Annotate Export AppUI PencilLoopKit Markdown
 Foundation XCTest SwiftData SwiftUI UIKit PencilKit PDFKit Speech
 
+# One build flag, here for the spelling check alone.
+#
+# `#if PENCILLOOP_STROKE_RECOGNIZER` is a compilation condition, not a type, and
+# check_decls.py now knows that — the name lives in that script's NON_TYPES. But
+# check_style.py reads this same file for its British-spelling exemptions, and
+# the flag is named after Apple's `PKStrokeRecognizer`, so it carries Apple's
+# spelling and trips the glossary on the three `#if` lines that are real code.
+# Renaming the flag would be the tidier fix; it is spelled this way in docs/03
+# and CLAUDE.md, which Wave 3 owns, so the rename belongs there and not here.
+# `PENCILLOOP_LEGACY_SPEECH` needed no entry at all and no longer has one.
+PENCILLOOP_STROKE_RECOGNIZER
+
 # Speech, iOS 26 (added by U5). SpeechAnalyzer's input element type and its
 # drain-and-finish method both carry Apple's spelling; the method is here rather
 # than in the type list because check_style.py exempts on token, not on kind.
 AnalyzerInput AssetInventory finalizeAndFinishThroughEndOfInput
 
-# Build flags. Not types at all — compilation-condition names read by check_decls
-# as type references because they are capitalised. See U5's report: the tidier
-# home for these is NON_TYPES in check_decls.py.
-PENCILLOOP_LEGACY_SPEECH PENCILLOOP_STROKE_RECOGNIZER
+# SwiftData migration + Foundation Predicate. Added by Wave 1 U1 (Storage): the
+# `@ModelActor` store fetches with `#Predicate` and the schema is versioned, and
+# none of these names could be written any other way.
+Predicate SchemaMigrationPlan VersionedSchema MigrationStage
 
-# SwiftData migration + Foundation Predicate, and the `T.Type` metatype
-# spelling. Added by Wave 1 U1 (Storage): the `@ModelActor` store fetches with
-# `#Predicate` and the schema is versioned, and none of these six names could be
-# written any other way. Every one is Apple's or the language's, added per the
-# instruction at the top of this file. `Version` is `Schema.Version`.
-Predicate SchemaMigrationPlan VersionedSchema MigrationStage Version Type
+# Qualified entries: allowed only as a member of the qualifier named here, never
+# as a bare word. `Version` and `Type` used to be listed bare, which told the
+# undeclared-type check to accept those two words anywhere in the repo — and
+# `Type` in particular is a word a typo lands on. These are the three places
+# they legitimately appear, all in Sources/Storage/Schema.
+Schema.Version VersionedSchema.Type PersistentModel.Type
 
 # swift-markdown node types (Apple, first-party — docs/03-architecture.md § Stack).
 # Referenced only inside Sources/Ingest/Adapters/SwiftMarkdownAdapter.swift, the

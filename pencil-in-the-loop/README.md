@@ -43,7 +43,11 @@ same folder. There is no server and no account.
 
 ## Target
 
-- iPadOS 27+ (required — `PKStrokeRecognizer` ships in 27)
+- iPadOS 26.0 minimum. `PKStrokeRecognizer` — the on-device handwriting engine, public in
+  iPadOS 27, a Swift actor covering 29 languages — sits behind an availability guard and a
+  compile flag, so the app builds against a 26 SDK and lights recognition up where it
+  exists. Ink is captured, persisted and exported either way; recognition only makes it
+  searchable. It is an enhancement, never a dependency.
 - iPad Air M2 or later, iPad Pro M4 or later, iPad mini A17 Pro
 - Swift 6, SwiftUI, strict concurrency
 - No third-party dependencies

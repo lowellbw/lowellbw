@@ -16,7 +16,7 @@ import Foundation
 import Core
 
 /// Press and hold to record, release to save; a lift under
-/// `minimumHoldDuration` is a mis-touch and leaves nothing behind
+/// `GestureTiming.minimumHoldDuration` is a mis-touch and leaves nothing behind
 /// (docs/02-spec.md § S3).
 ///
 /// Pure and synchronous. Feed it `Event`s, apply the returned `Effect`s, render
@@ -32,21 +32,10 @@ public struct VoiceRecordingMachine: Sendable, Hashable {
 
     // MARK: Timings
 
-    /// A lift shorter than this is a mis-touch: nothing is saved and no marker
-    /// is drawn (docs/04-flows.md § F4). Measured from the moment recording
-    /// actually started — the instant the popover appeared and the waveform
-    /// began — not from touch-down, because that is the moment the user
-    /// perceives as the start of the hold.
-    public static let minimumHoldDuration: TimeInterval = 0.3
-
-    /// How long the Pencil long-press must be held before the popover opens and
-    /// recording begins (docs/04-flows.md § F4).
-    ///
-    /// Wave 2 configures its `UILongPressGestureRecognizer` with this. It lives
-    /// here rather than in the view so the two halves of one gesture cannot
-    /// drift apart; see the note in this file's unit report about promoting it
-    /// to Core if a second module ever needs it.
-    public static let longPressDuration: TimeInterval = 0.4
+    // Both durations now live in `GestureTiming` (Core/Contracts). Wave 2's
+    // gesture recogniser configures its `UILongPressGestureRecognizer` from
+    // `GestureTiming.longPressDuration`, and the two halves of one gesture
+    // cannot drift apart because there is only one of each number.
 
     // MARK: State
 
@@ -83,7 +72,7 @@ public struct VoiceRecordingMachine: Sendable, Hashable {
     /// Why a recording produced no comment.
     public enum DiscardReason: Sendable, Hashable {
 
-        /// Lifted in under `minimumHoldDuration` (docs/04-flows.md § F4).
+        /// Lifted in under `GestureTiming.minimumHoldDuration` (docs/04-flows.md § F4).
         case misTouch(heldFor: TimeInterval)
 
         /// Held long enough, but the engine settled on nothing. Saving an empty
@@ -241,7 +230,7 @@ public struct VoiceRecordingMachine: Sendable, Hashable {
 
         case (.recording(let since), .touchUp(let at)):
             let held = max(0, at.timeIntervalSince(since))
-            if held < Self.minimumHoldDuration {
+            if held < GestureTiming.minimumHoldDuration {
                 phase = .discarded(reason: .misTouch(heldFor: held))
                 return [.stopTranscribing, .releaseCapture, .dismiss]
             }

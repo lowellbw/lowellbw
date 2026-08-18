@@ -19,7 +19,9 @@
 //    1. ask for the download,
 //    2. wait until the item reports itself downloaded **and** has a size,
 //    3. read it under coordination, which blocks until it is materialised,
-//    4. copy it into the app's own container,
+//    4. copy it into the app's own document directory — the one
+//       `DocumentContainer.documentDirectory(folderName:)` names, which is
+//       also where Ingest materialises and what Storage records,
 //    5. compare the copied byte count against the size the provider reported,
 //    6. write the snapshot sidecar last, so a directory without one is
 //       recognisably half-copied and gets redone.
@@ -122,7 +124,9 @@ public struct InboxItemPinner: Sendable {
         }
     }
 
-    /// Where pinned copies live. Everything under here is ours to delete.
+    /// Where pinned copies live: `DocumentContainer.documentsRoot()` in the
+    /// app, a temporary directory in tests. Everything under here is ours to
+    /// delete.
     public var destinationRoot: URL
 
     /// How long to wait for a provider to finish a download before giving up
@@ -153,23 +157,26 @@ public struct InboxItemPinner: Sendable {
     /// ever copied back into a sync folder by hand, every watcher ignores it.
     public static let snapshotFileName = ".pinned.json"
 
-    /// `Application Support/PencilLoop/pinned`, created on demand.
+    /// `DocumentContainer.documentsRoot()` — the one place a pinned document
+    /// lives.
     ///
-    /// Application Support rather than Caches on purpose: Caches is exactly the
-    /// directory the system is allowed to empty, and "never evicted" is the
-    /// requirement.
+    /// This used to be a `pinned/` directory of its own, which meant Sync
+    /// verified one copy of the bytes and Ingest then made a second one
+    /// somewhere else, and the copy Storage recorded was the unverified one.
+    /// Pinning straight into the documents root is what makes the path Storage
+    /// stores relative, and therefore what makes a document still open after a
+    /// reinstall (DocumentContainer.swift header).
     public static func defaultDestinationRoot() -> URL {
-        let manager = FileManager.default
-        let support = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        let base = support ?? manager.temporaryDirectory
-        return base
-            .appendingPathComponent("PencilLoop", isDirectory: true)
-            .appendingPathComponent("pinned", isDirectory: true)
+        DocumentContainer.documentsRoot()
     }
 
     // MARK: - Deciding whether there is work
 
     /// Where a folder's pinned copy lives.
+    ///
+    /// The same directory `DocumentContainer.documentDirectory(folderName:)`
+    /// names, and the same one Ingest materialises into and Storage records
+    /// paths relative to. There is one directory per document, not three.
     public func pinnedDirectory(forFolderNamed folderName: String) -> URL {
         destinationRoot.appendingPathComponent(folderName, isDirectory: true)
     }
@@ -404,6 +411,13 @@ public struct InboxItemPinner: Sendable {
 
     /// Puts the finished staging directory where the pinned copy belongs,
     /// keeping the previous copy until the new one is in place.
+    ///
+    /// The replacement is wholesale, so anything Ingest derived into the
+    /// previous directory — a `document.pdf` rendered from markdown, a
+    /// `sourcemap.json` — goes with it. That is correct: a re-pin only happens
+    /// when the source directory changed, and the caller re-ingests
+    /// immediately afterwards, which regenerates exactly those files
+    /// (SyncCoordinator.ingest(_:)).
     private func swap(staging: URL, into destination: URL) throws {
         let manager = FileManager.default
         if manager.fileExists(atPath: destination.path) {

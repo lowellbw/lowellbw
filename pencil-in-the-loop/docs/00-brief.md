@@ -36,7 +36,7 @@ voice comments, and a one-tap return path to the originating conversation.
 |---|---|---|
 | Render engine | **Everything becomes a PDF on ingest** | One annotation engine for md and PDF. Layout is frozen, so ink can never drift. PDFKit gives pagination, text selection and an annotation model for free. |
 | Ink capture | PencilKit, `drawingPolicy = .pencilOnly` | Finger scrolls, Pencil draws. No tool switching, which is the difference between an app you use and one you don't. |
-| Handwriting → text | `PKStrokeRecognizer` (iPadOS 27) | The Notes/Freeform engine, now public. Works on stroke vectors not pixels, so it beats OCR. On-device, offline, 29 languages. Forces the iPadOS 27 minimum — accepted. |
+| Handwriting → text | `PKStrokeRecognizer` (iPadOS 27) | The Notes/Freeform engine, now public. Works on stroke vectors not pixels, so it beats OCR. On-device, offline, 29 languages. Public in iPadOS 27, but the build floor stays at 26.0 and the recogniser sits behind an availability guard: ink is captured and exported either way, recognition only makes it searchable. |
 | Voice → text | `SpeechAnalyzer` + `SpeechTranscriber` | Fully on-device once language assets download. No network on the critical path. |
 | Comment anchors | Quoted excerpt with context, never line numbers | Claude regenerates documents. Quoted strings still resolve; line numbers don't. Same principle as a diff-based edit tool. |
 | Transport | A user-chosen folder, watched | Works with iCloud Drive, Dropbox, or a git repo synced by Working Copy. No server, no account, no per-tool integration. |

@@ -96,6 +96,8 @@ actor SyncTestStore: DocumentStoring {
 
     func pages(documentId: UUID) throws -> [PageSnapshot] { [] }
 
+    func drawingData(pageIndex: Int, documentId: UUID) throws -> Data? { nil }
+
     // MARK: - Comments
 
     @discardableResult
@@ -114,6 +116,9 @@ actor SyncTestStore: DocumentStoring {
 
     func deleteComment(id: UUID) throws {}
 
+    @discardableResult
+    func undoLastCommentDeletion() throws -> CommentSnapshot? { nil }
+
     func comments(documentId: UUID) throws -> [CommentSnapshot] { [] }
 
     // MARK: - Review lifecycle
@@ -123,6 +128,12 @@ actor SyncTestStore: DocumentStoring {
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {
         replies[documentId] = text
     }
+
+    // MARK: - Reading time
+
+    func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws {}
+
+    func readingSeconds(documentId: UUID) throws -> TimeInterval { 0 }
 
     // MARK: - Housekeeping
 

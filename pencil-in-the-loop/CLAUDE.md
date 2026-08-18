@@ -1,7 +1,8 @@
 # CLAUDE.md
 
 Project context for Claude Code. Read `README.md` next, then the doc for whatever
-milestone you're on.
+milestone you're on. Every milestone has been written but none of it has ever been
+compiled — if you are heading for a build, read `FirstBuild.md` first.
 
 ## What this is
 
@@ -30,9 +31,19 @@ Full spec in `docs/`. Read `docs/07-build-plan.md` to find the current milestone
 
 ## Stack
 
-Swift 6 with strict concurrency, SwiftUI, iPadOS 27 minimum (required —
-`PKStrokeRecognizer` ships in 27). **No third-party dependencies.** Everything needed is a
-system framework: PDFKit, PencilKit, Speech, SwiftData, swift-markdown.
+Swift 6 with strict concurrency, SwiftUI, iPadOS 26.0 minimum
+(`IPHONEOS_DEPLOYMENT_TARGET` in `Config/Shared.xcconfig`). **No third-party
+dependencies.** Everything needed is a system framework: PDFKit, PencilKit, Speech,
+SwiftData, swift-markdown.
+
+`PKStrokeRecognizer` — handwriting to text, on device, 29 languages — is public in iPadOS
+27, which is above the floor. The engine that uses it compiles only when
+`PENCILLOOP_STROKE_RECOGNIZER` is defined (off by default in `Package.swift`) and runs only
+under `#available(iOS 27, *)`; everything else holds `any HandwritingRecognising` and gets
+an implementation that declines without throwing. So the app builds and runs on a 26 SDK,
+and lights recognition up where it exists. Strokes are captured, persisted and exported as
+images regardless — recognition is an enhancement, never a dependency. Raising the floor to
+27.0 and defining the flag are one commit, not two.
 
 `Core/` and `Storage/` must not import SwiftUI or UIKit.
 

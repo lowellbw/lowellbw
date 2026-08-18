@@ -293,9 +293,13 @@ extension Document {
         }
     }
 
-    /// The pinned `document.pdf`. See `StorageLocations.url(forStoredPath:)` for
-    /// what an empty path resolves to.
-    var pdfURL: URL {
+    /// The pinned `document.pdf`, or nil when this row has no pinned bytes.
+    ///
+    /// A row recorded by `recordIngestFailure(folderName:reason:)` has an empty
+    /// `pdfPath`: the folder was seen and could not be ingested, so there is a
+    /// library row and no document behind it. Nil is the honest answer, and it
+    /// is what stops a reader handing PDFKit the documents root itself.
+    var pdfURL: URL? {
         StorageLocations.url(forStoredPath: pdfPath)
     }
 

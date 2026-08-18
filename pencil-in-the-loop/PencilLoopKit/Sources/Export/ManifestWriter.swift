@@ -20,9 +20,10 @@
 //
 //  The watcher reads `files` as either strings or objects carrying `path`,
 //  `name` or `file` — `ManifestFile.path` satisfies that unchanged. It reads
-//  `complete` as optional and treats its absence as "assume complete", which is
-//  what we rely on: `BundleManifest` is frozen in Core and has no such field.
-//  See the change request in this unit's report.
+//  `complete` as optional, and `BundleManifest` now writes it explicitly as
+//  `true`. It also reads the manifest's own `origin` block before falling back
+//  to `inbox/<slug>/meta.json`, and the manifest now carries one, so a renamed
+//  or tidied-away inbox folder no longer loses the route back.
 //  ─────────────────────────────────────────────────────────────────────────────
 //
 
@@ -56,13 +57,18 @@ public struct ManifestWriter: Sendable {
     ///   - documentId: `meta.json`'s id, verbatim.
     ///   - reviewFolder: the bundle's own directory name, `<slug>.review`.
     ///   - createdAt: when the bundle was written.
+    ///   - origin: the reviewed document's origin, copied in so the bundle
+    ///     carries its own return path. Pass nil only when there was no
+    ///     metadata at all.
     /// - Returns: a manifest whose `files` are sorted by path, so two runs over
-    ///   the same bundle produce identical bytes.
+    ///   the same bundle produce identical bytes, and which says `complete:
+    ///   true` — this writer only ever builds a finished bundle.
     public func manifest(
         files: [BundleFile],
         documentId: String,
         reviewFolder: String,
-        createdAt: Date
+        createdAt: Date,
+        origin: Origin? = nil
     ) -> BundleManifest {
         let listed = files
             .filter { $0.relativePath != BundleManifest.fileName }
@@ -81,7 +87,9 @@ public struct ManifestWriter: Sendable {
             reviewFolder: reviewFolder,
             createdAt: createdAt,
             generator: generator,
-            files: listed
+            files: listed,
+            complete: true,
+            origin: origin
         )
     }
 

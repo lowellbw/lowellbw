@@ -48,10 +48,12 @@ public actor SyncCoordinator: SyncCoordinating {
     private let queue: OutboxQueue
     private let importsAppGroupStaging: Bool
 
-    /// Concrete rather than `any FolderAccessing` on purpose: scanning,
-    /// pinning and writing all `await` in the middle, and the protocol's
-    /// `withAccess(to:perform:)` takes a synchronous closure. See the contract
-    /// request in this unit's report.
+    /// Concrete rather than `any FolderAccessing` on purpose. The protocol now
+    /// carries an async `withAccess` overload, which covers everything that
+    /// suspends inside one call — but this actor opens the scope in one method
+    /// and closes it in another, across the scan, the pin, the ingest and the
+    /// reply sweep, and that needs the `beginAccess`/`endAccess` pair this type
+    /// keeps outside the protocol. Anything narrower should use `withAccess`.
     private let access: SyncFolderAccess
 
     private var isStarted = false
@@ -231,8 +233,8 @@ public actor SyncCoordinator: SyncCoordinating {
         )
         let metadataData = try MetadataFile.encode(metadata)
         try writeInboxDirectory(named: folderName, files: [
-            (SyncFileNames.sourceMarkdown, Data(text.utf8)),
-            (SyncFileNames.metadata, metadataData)
+            (DocumentFileNames.sourceMarkdown, Data(text.utf8)),
+            (DocumentFileNames.metadata, metadataData)
         ])
 
         let directory = folder.inboxURL.appendingPathComponent(folderName, isDirectory: true)
@@ -278,11 +280,20 @@ public actor SyncCoordinator: SyncCoordinating {
         await flushQueue()
 
         let known = (try? await store.knownFolderNames()) ?? []
-        let items = try await scanner.scan(folder, knownFolderNames: known)
-        emit(.scanStarted(pending: items.count))
+        let scan = try await scanner.scan(folder, knownFolderNames: known)
+        emit(.scanStarted(pending: scan.items.count))
+
+        // A subdirectory the scanner could not read becomes an error row, not a
+        // silence. The scan carries on regardless (Protocols.swift §
+        // InboxScanning).
+        for skipped in scan.skipped {
+            SyncLog.coordinator.error("Skipped \(skipped.folderName): \(skipped.reason)")
+            try? await store.recordIngestFailure(folderName: skipped.folderName, reason: skipped.reason)
+            emit(.ingestFailed(folderName: skipped.folderName, reason: skipped.reason))
+        }
 
         var ingestedCount = 0
-        for item in items {
+        for item in scan.items {
             if Task.isCancelled { break }
             if known.contains(item.folderName), pinner.isPinnedAndCurrent(item) { continue }
             if await ingest(item) { ingestedCount += 1 }

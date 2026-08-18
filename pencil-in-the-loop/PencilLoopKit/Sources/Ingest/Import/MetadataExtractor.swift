@@ -2,7 +2,16 @@
 //  MetadataExtractor.swift
 //  Ingest · Import
 //
-//  Title, page count, and the vocabulary Speech will want later.
+//  Title and page count.
+//
+//  This file used to build the speech term list too — the same signature as
+//  `TranscriptCorrecting.terms(forDocumentText:title:)`, with a second
+//  implementation behind it. There is one implementation now, `TermListCorrector`
+//  in Annotate, which is the type that actually conforms to that protocol. The
+//  terms are derived when the popover opens, from `DocumentDetail.extractedText`
+//  and the title, rather than carried on a DTO: they are cheap, they are wanted
+//  for the length of one recording, and a copy computed at ingest would be stale
+//  the moment the document was re-sent.
 //
 //  All of it pure: no file handles, no PDFKit, nothing that needs a document on
 //  disk. The inputs come from `PDFImporter`, `SwiftMarkdownAdapter` and
@@ -13,12 +22,8 @@
 import Foundation
 import Core
 
-/// Decides a document's title and page count, and builds its term list.
+/// Decides a document's title and page count.
 public struct MetadataExtractor: Sendable {
-
-    /// Roughly what the fallback speech engine accepts as `contextualStrings`
-    /// (docs/03-architecture.md § 4).
-    public static let maximumTerms = 100
 
     public init() {}
 
@@ -95,54 +100,6 @@ public struct MetadataExtractor: Sendable {
         return claimed
     }
 
-    // MARK: - Speech vocabulary
-
-    /// Document jargon for the transcriber: identifiers, capitalised nouns,
-    /// code-shaped tokens and title words (docs/03-architecture.md § 4).
-    ///
-    /// Deliberately the same signature as `TranscriptCorrecting.terms(
-    /// forDocumentText:title:)` without adopting the protocol — correcting a
-    /// transcript is Annotate's job and this module has no business owning half
-    /// of it. See the contract note in this unit's report.
-    ///
-    /// - Returns: terms in descending order of usefulness, de-duplicated
-    ///   case-insensitively, capped at `maximumTerms`. Never throws; a document
-    ///   with nothing distinctive in it returns an empty array.
-    public func terms(forDocumentText text: String, title: String) -> [String] {
-        var ordered: [String] = []
-        var seen: Set<String> = []
-
-        func offer(_ term: String) {
-            let key = term.lowercased()
-            guard !seen.contains(key), !MetadataExtractor.stopWords.contains(key) else { return }
-            seen.insert(key)
-            ordered.append(term)
-        }
-
-        // 1 · Title words first. They are what the user will say out loud.
-        for word in tokens(in: title) where word.count >= 3 {
-            offer(word)
-        }
-
-        // 2 · Identifiers: anything shaped like code survives dictation badly
-        // and is the most valuable thing to bias towards.
-        var identifierCounts: [String: Int] = [:]
-        var properCounts: [String: Int] = [:]
-        for token in tokens(in: text) {
-            guard token.count >= 3, token.count <= 40 else { continue }
-            if isIdentifier(token) {
-                identifierCounts[token, default: 0] += 1
-            } else if isProperNoun(token) {
-                properCounts[token, default: 0] += 1
-            }
-        }
-
-        for term in ranked(identifierCounts) { offer(term) }
-        for term in ranked(properCounts) { offer(term) }
-
-        return Array(ordered.prefix(MetadataExtractor.maximumTerms))
-    }
-
     // MARK: - Private
 
     private func usable(_ candidate: String?) -> String? {
@@ -150,63 +107,4 @@ public struct MetadataExtractor: Sendable {
         let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
         return trimmed.isEmpty ? nil : trimmed
     }
-
-    /// Frequency first, then alphabetically so the list is stable across runs —
-    /// a term list that reshuffles between ingests makes a transcription bug
-    /// impossible to reproduce.
-    private func ranked(_ counts: [String: Int]) -> [String] {
-        counts
-            .sorted { left, right in
-                left.value == right.value ? left.key < right.key : left.value > right.value
-            }
-            .map(\.key)
-    }
-
-    private func tokens(in text: String) -> [String] {
-        text
-            .split(whereSeparator: { character in
-                !(character.isLetter || character.isNumber || character == "_" || character == ".")
-            })
-            .map { token in
-                var value = String(token)
-                while value.hasPrefix(".") { value.removeFirst() }
-                while value.hasSuffix(".") { value.removeLast() }
-                return value
-            }
-            .filter { candidate in
-                !candidate.isEmpty
-            }
-    }
-
-    /// `snake_case`, `camelCase`, `PascalCase`, `dotted.path`, `HTTP2` — the
-    /// shapes a recogniser turns into two ordinary words.
-    private func isIdentifier(_ token: String) -> Bool {
-        if token.contains("_") || token.contains(".") { return true }
-        if token.contains(where: \.isNumber), token.contains(where: \.isLetter) { return true }
-        let characters = Array(token)
-        guard characters.count > 1 else { return false }
-        var sawLower = false
-        for character in characters.dropFirst() {
-            if character.isLowercase { sawLower = true }
-            if character.isUppercase, sawLower { return true }
-        }
-        return false
-    }
-
-    /// A capitalised word that is not a sentence opener we recognise. Crude on
-    /// purpose: a false positive costs one wasted slot in a hundred, a false
-    /// negative costs a mis-transcribed product name in every comment.
-    private func isProperNoun(_ token: String) -> Bool {
-        guard let first = token.first, first.isUppercase else { return false }
-        return token.dropFirst().contains(where: \.isLowercase)
-    }
-
-    /// Words that would only crowd out something useful.
-    private static let stopWords: Set<String> = [
-        "the", "and", "for", "with", "that", "this", "from", "into", "than",
-        "then", "they", "them", "there", "their", "have", "has", "had", "was",
-        "were", "will", "would", "should", "could", "when", "what", "which",
-        "while", "where", "been", "because", "about", "after", "before", "over",
-        "under", "also", "some", "such", "only", "more", "most", "other", "own"
-    ]
 }

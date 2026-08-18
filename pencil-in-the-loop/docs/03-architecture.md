@@ -2,7 +2,8 @@
 
 ## Stack
 
-- Swift 6, strict concurrency. SwiftUI. iPadOS 27 minimum.
+- Swift 6, strict concurrency. SwiftUI. iPadOS 26.0 minimum. Handwriting recognition
+  needs 27 and is compiled behind a flag, so it is an enhancement and never a dependency.
 - **No third-party dependencies.** Everything below is a system framework.
 - Targets: the app, a **share extension**, and a shared framework for the model layer.
   App Group for the shared container.
@@ -11,7 +12,7 @@
 |---|---|
 | Rendering, pagination, text selection | PDFKit |
 | Ink capture | PencilKit (`PKCanvasView`, `PKDrawing`, `PKToolPicker`) |
-| Handwriting → text | PencilKit (`PKStrokeRecognizer`, iPadOS 27) |
+| Handwriting → text | PencilKit (`PKStrokeRecognizer`, iPadOS 27, availability-guarded) |
 | Voice → text | Speech (`SpeechAnalyzer`, `SpeechTranscriber`) |
 | Markdown parsing | `swift-markdown` (Apple, first-party) |
 | md → PDF | `UIGraphicsPDFRenderer` over an `NSAttributedString` |
@@ -19,21 +20,45 @@
 | Folder access & watching | `fileImporter`, security-scoped bookmarks, `NSFileCoordinator` + `NSFilePresenter` |
 | Pencil gestures | `UIPencilInteraction` (squeeze), `UIHoverGestureRecognizer` |
 
+**Deployment floor.** `IPHONEOS_DEPLOYMENT_TARGET = 26.0`. `PKStrokeRecognizer` is public
+in iPadOS 27 — an on-device Swift actor covering 29 languages — so the engine built on it
+compiles only when `PENCILLOOP_STROKE_RECOGNIZER` is defined and runs only under
+`#available(iOS 27, *)`. Every other module holds `any HandwritingRecognising` and, on a
+build or a device without it, gets an implementation that declines everything without
+throwing. Ink is captured, persisted and exported as images either way; recognition only
+makes it searchable. Raising the floor to 27.0 in `Config/Shared.xcconfig` and defining the
+flag are one commit, not two.
+
 ## Module layout
 
 ```
-PencilLoop/
-├─ Core/            models, anchors, ID types — no UIKit imports
+PencilLoopKit/Sources/
+├─ Core/            models, anchors, ID types, protocols — Foundation only
 ├─ Storage/         SwiftData schema, file layout, bookmark management
 ├─ Sync/            folder watcher, inbox scanner, outbox writer
 ├─ Ingest/          MarkdownRenderer, PDFImporter, MetadataExtractor
 ├─ Annotate/        InkLayer, AnchorResolver, VoiceRecorder, HandwritingRecogniser
 ├─ Export/          ReviewBundleBuilder, InkCropper, ReturnPathResolver
-├─ UI/              Library, Reader, CommentPopover, ReviewSheet, Settings
-└─ ShareExtension/
+└─ AppUI/           Library, Reader, CommentPopover, ReviewSheet, Settings
 ```
 
-`Core` and `Storage` must not import SwiftUI or UIKit. Everything else may.
+The two app shells — `Apps/PencilLoop` and `Apps/ReviewShareExtension` — are about forty
+lines between them and hold no logic; everything is in the package.
+
+`Core` and `Storage` must not import SwiftUI or UIKit. Everything else may. `Sync` depends
+on `Core` alone and reaches the library through `DocumentStoring`, which is what keeps
+SwiftData out of the product the share extension links.
+
+Beyond the model types below, `Core` holds the protocols every module is written against —
+`DocumentStoring`, `DocumentIngesting`, `InboxScanning`, `SyncCoordinating`,
+`FolderAccessing`, `SettingsStoring`, `SpeechTranscribing`, `TranscriptCorrecting`,
+`HandwritingRecognising`, `InkCropping`, `ReviewBundleBuilding` — along with
+`PencilLoopError`, the `FolderEvent`/`SyncEvent` streams, `ContractCoding` (one encoder
+configuration, so two modules cannot spell the same JSON differently), `Slug`,
+`DocumentFileNames` and `DocumentContainer` (the file names from `05-file-contracts.md` and
+the container layout, spelled once), and `GestureTiming` (the 0.4s long-press and the 0.3s
+minimum hold, shared by the recogniser and the recording state machine). A module that
+needs a type another module owns is a module that needs a contract in `Core`.
 
 ## Data model
 
@@ -72,10 +97,16 @@ struct Anchor: Codable {
   var prefix: String              // 32 chars before
   var suffix: String              // 32 chars after
   var pageIndex: Int
-  var normalisedRect: CGRect      // fallback when text matching fails
-  var sourceRange: Range<Int>?    // into source.md, when a source map exists
+  var normalisedRect: NormalisedRect  // fallback when text matching fails
+  var sourceRange: SourceRange?       // into source.md, when a source map exists
 }
 ```
+
+`NormalisedRect` and `SourceRange` are `Core` types, not `CGRect` and `Range<Int>`. Both
+exist because the on-disk shape wins: `05-file-contracts.md` shows four-element and
+two-element JSON arrays, and both Foundation types encode as keyed objects instead. Their
+units are frozen — see `05-file-contracts.md` § Units and coordinate spaces, which is the
+one place to read before converting anything.
 
 ## The four hard parts
 
@@ -83,7 +114,8 @@ struct Anchor: Codable {
 
 The whole architecture rests on freezing layout at ingest. Parse with `swift-markdown`,
 build an `AttributedString`, render page by page with `UIGraphicsPDFRenderer` at a fixed
-page size (A4 portrait, 56pt margins, 11pt body).
+page size: A4 portrait (595.276 × 841.89pt), 11pt body on 1.35 leading, 56pt margins at
+the top, left and bottom — and **140pt on the right**.
 
 **While rendering, record a source map**: for each laid-out text run, store
 `(pageIndex, rect) → range in the original markdown`. Persist as `sourcemap.json`.
@@ -93,9 +125,36 @@ in the markdown Claude actually wrote. Without it you only have the quoted strin
 is still workable, but the source map makes the round trip precise. **Build it in M1, not
 as an afterthought.**
 
-Design the markdown page for annotation, not for density: wide margins (the right margin
-is where handwriting goes), generous leading, and no code block wider than the text
-column. See `06-integrations.md` for the matching authoring guidance sent to Claude.
+#### The right margin is the product
+
+The 140pt right margin is the feature, not generosity. It leaves a 399.3pt text column and
+a strip of empty page beside every line, and that strip is where handwriting goes: a margin
+note sits next to the sentence it is about, and an arrow has somewhere to start. A page set
+for density has nowhere to write on, so the note ends up in a separate app — which is the
+failure this whole thing exists to remove. Everything else about the page follows from the
+same choice: generous leading, short measure, nothing running edge to edge.
+
+`PageGeometry.annotationFriendly` in `Core` is the only place these numbers live. The
+renderer, the ink cropper and the source map all derive from it, so none of them can
+disagree about how big anything is.
+
+#### Code blocks do not fit, and the fix is provisional
+
+`06-integrations.md` tells Claude to keep code under about 76 characters so nothing wraps
+on an A4 page. Against a 399.3pt column that is not true: 76 monospaced characters need
+roughly 456pt at 10pt, and only about 66 fit. Ingest resolves it by measuring the
+monospaced advance and scaling the code font down until the promised 76 fit — about 8.75pt
+against an 11pt body. Nothing wraps, nothing overflows, and code reads noticeably smaller
+than the prose around it.
+
+Whether 8.75pt is *legible* is a judgement about a physical page held at arm's length, and
+it cannot be made in a simulator or from a screenshot. Read a code-heavy document on the
+iPad before treating this as settled. If it is too small there are two honest ways out and
+they trade against each other: narrow the right margin — about 83pt would fit 76 characters
+at 10pt, at the cost of 57pt of the writing strip — or lower `maxCodeColumnCharacters` to
+66 and change the same number in `06-integrations.md`'s authoring guidance, which is what
+Claude is actually told. Changing one without the other puts the promise back where it
+started.
 
 ### 2 · Ink over a scrolling PDF
 

@@ -66,6 +66,15 @@ public protocol AppEnvironment: Sendable {
     /// nothing in the UI may wait on it.
     var recogniser: any HandwritingRecognising { get }
 
+    /// Builds the document's term list and repairs the transcript against it.
+    ///
+    /// Terms are derived on demand from `DocumentDetail.extractedText` and its
+    /// title, not stored: they are cheap, they are only wanted while the
+    /// comment popover is open, and a copy persisted at ingest would be stale
+    /// the moment the document was re-sent. Pure and total — there is no
+    /// failure mode (Protocols.swift § TranscriptCorrecting).
+    var corrector: any TranscriptCorrecting { get }
+
     /// Turns a `ReviewDraft` into the bytes of a bundle. The review sheet builds
     /// the draft; this makes it sendable.
     var bundleBuilder: any ReviewBundleBuilding { get }
@@ -91,6 +100,7 @@ public struct PreviewEnvironment: AppEnvironment {
     public let sync: any SyncCoordinating
     public let transcriber: any SpeechTranscribing
     public let recogniser: any HandwritingRecognising
+    public let corrector: any TranscriptCorrecting
     public let bundleBuilder: any ReviewBundleBuilding
     public let returnPathResolver: any ReturnPathResolving
     public let settings: any SettingsStoring
@@ -110,6 +120,7 @@ public struct PreviewEnvironment: AppEnvironment {
         self.sync = PreviewSyncCoordinator()
         self.transcriber = PreviewSpeechTranscriber(state: speechAssetState)
         self.recogniser = PreviewHandwritingRecogniser()
+        self.corrector = PreviewTranscriptCorrector()
         self.bundleBuilder = PreviewReviewBundleBuilder()
         self.returnPathResolver = PreviewReturnPathResolver()
         self.settings = PreviewSettingsStore(settings: settings)
@@ -186,6 +197,10 @@ public actor PreviewDocumentStore: DocumentStoring {
         storedDetail?.pages ?? []
     }
 
+    public func drawingData(pageIndex: Int, documentId: UUID) throws -> Data? {
+        storedDetail?.pages.first { $0.pageIndex == pageIndex }?.drawingData
+    }
+
     @discardableResult
     public func addComment(_ draft: CommentDraft, documentId: UUID) throws -> CommentSnapshot {
         CommentSnapshot(
@@ -202,6 +217,11 @@ public actor PreviewDocumentStore: DocumentStoring {
 
     public func deleteComment(id: UUID) throws {}
 
+    /// Nothing was deleted, so there is nothing to restore. A preview exercises
+    /// the "nothing to undo" branch, which is a state the UI must handle.
+    @discardableResult
+    public func undoLastCommentDeletion() throws -> CommentSnapshot? { nil }
+
     public func comments(documentId: UUID) throws -> [CommentSnapshot] {
         storedDetail?.comments ?? []
     }
@@ -209,6 +229,10 @@ public actor PreviewDocumentStore: DocumentStoring {
     public func recordReviewSent(documentId: UUID, at date: Date, directoryName: String) throws {}
 
     public func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {}
+
+    public func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws {}
+
+    public func readingSeconds(documentId: UUID) throws -> TimeInterval { 0 }
 
     public func storageBytes() throws -> Int64 { 0 }
 
@@ -240,6 +264,13 @@ public struct PreviewSyncCoordinator: SyncCoordinating {
             byteCount: 0
         )
     }
+
+    /// There are no replies in a preview, and "no reply yet" is the state the
+    /// Sent screen spends most of its life in.
+    @discardableResult
+    public nonisolated func ingestReply(fromReviewDirectory reviewDirectoryName: String) async throws -> UUID {
+        throw PencilLoopError.nothingToIngest(folderName: reviewDirectoryName)
+    }
 }
 
 /// A transcriber that reports whatever state it was given and emits nothing.
@@ -254,6 +285,8 @@ public struct PreviewSpeechTranscriber: SpeechTranscribing {
     public nonisolated func assetState() async -> SpeechAssetState { state }
 
     public nonisolated func prepareAssets() async {}
+
+    public nonisolated func prewarm() async {}
 
     public nonisolated func transcribe(contextualTerms: [String]) -> AsyncThrowingStream<TranscriptionUpdate, Error> {
         AsyncThrowingStream { continuation in continuation.finish() }
@@ -271,6 +304,19 @@ public struct PreviewHandwritingRecogniser: HandwritingRecognising {
     public nonisolated func recogniseText(drawingData: Data, locale: Locale) async -> RecognisedInk? { nil }
 
     public nonisolated func isAvailable(for locale: Locale) async -> Bool { false }
+}
+
+/// A corrector that finds no terms and corrects nothing — the "quiet document"
+/// case, which is the one the popover must render without a term list.
+public struct PreviewTranscriptCorrector: TranscriptCorrecting {
+
+    public init() {}
+
+    public nonisolated func terms(forDocumentText text: String, title: String) -> [String] { [] }
+
+    public nonisolated func correct(_ transcript: String, against terms: [String]) -> String {
+        transcript
+    }
 }
 
 /// A builder that produces an empty bundle with the right shape.

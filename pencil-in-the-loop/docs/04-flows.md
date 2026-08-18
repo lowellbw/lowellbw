@@ -3,28 +3,57 @@
 ## F1 · Ingest
 
 ```
-source ──▶ writes inbox/<slug>/ ──▶ NSFilePresenter fires
-                                     │
-                                     ▼
-                        is there a document.pdf?
-                          │yes                  │no
-                          ▼                     ▼
-                   use it directly     render source.md → PDF
-                                       + emit sourcemap.json
-                                     │
-                                     ▼
-                  extract title, page count, full text
-                                     ▼
-                     insert Document, state = .unread
-                                     ▼
-                        appears in library sidebar
+   source writes inbox/<slug>/
+                 │
+                 ▼
+   poll every 15s ──or── NSFilePresenter says "now"
+                 │
+                 ▼
+   scan inbox/ — which directories are new or changed?
+                 │
+                 ▼
+   download and pin into the app container, then verify
+                 │
+                 ▼
+        is there a document.pdf?
+          │yes                  │no
+          ▼                     ▼
+   use it directly     render source.md → PDF
+          │            + emit sourcemap.json
+          └───────────┬─────────┘
+                      ▼
+     extract title, page count, full text
+                      ▼
+        insert Document, state = .unread
+                      ▼
+           appears in library sidebar
 ```
+
+**The poll is the mechanism; the presenter only shortens the wait.** The sync folder is a
+file-provider folder, and a provider materialises a directory entry before the bytes behind
+it exist, delivers files in transfer order rather than write order, and can say nothing at
+all for an item that was evicted and later re-downloaded. So the watcher asks the only
+question that survives that — *what is in the folder now, and is it different from last
+time?* — on a 15-second timer, and an `NSFilePresenter` callback does one thing: ask for
+that scan now instead of in fifteen seconds. Nothing reads the callback's arguments and a
+callback that never arrives costs latency and nothing else. Pull-to-refresh is a third
+entry point into the same scan. Duplicate events are free; missed ones are not.
+
+**Download-and-pin sits between the scan and ingest, and is not optional.** A
+file-provider URL is a promise that bytes can be fetched, not a file. So: start the
+download, wait until the item reports itself downloaded *and* has a size, read it under
+coordination, copy it into the app's own container, compare the copied byte count against
+the size the provider reported, and write the snapshot sidecar last so a directory without
+one is recognisably half-copied and gets redone. Only then may the document become
+openable. This is `02-spec.md` § "Everything is always local" made real; skipping it makes
+the library a set of spinners the first time iCloud purges.
 
 Sources: Cowork skill · Claude Code MCP · share extension · manual drop.
 All four converge on the same folder write. There is one ingest path, not four.
 
 Failure handling: a malformed `meta.json` must never block ingest — fall back to filename
-as title and `origin.kind = "manual"`. A document that can't be rendered shows in the
+as title and `origin.kind = "manual"`. Nothing in `meta.json` is required for a document to
+be readable, and decoding it cannot throw. A document that can't be rendered shows in the
 library with an error row rather than vanishing.
 
 ## F2 · Read
@@ -46,9 +75,9 @@ debounce 500ms → persist PKDrawing to Page.drawingData
 background: PKStrokeRecognizer → Page.recognisedInk (for search + export)
 ```
 
-Recognition runs off the main actor and never blocks drawing. If it fails, the ink is
-still captured and still exported as an image — recognition is an enhancement, never a
-dependency.
+Recognition runs off the main actor and never blocks drawing. If it fails — or is absent,
+on a build or a device below iPadOS 27 — the ink is still captured and still exported as an
+image. Recognition is an enhancement, never a dependency.
 
 ## F4 · Voice comment
 

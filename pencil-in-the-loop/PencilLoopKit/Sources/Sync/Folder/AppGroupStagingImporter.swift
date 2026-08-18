@@ -171,7 +171,7 @@ public struct AppGroupStagingImporter: Sendable {
                 try manager.copyItem(at: source, to: staging.appendingPathComponent(fileName, isDirectory: false))
             }
 
-            let metaURL = staging.appendingPathComponent(SyncFileNames.metadata, isDirectory: false)
+            let metaURL = staging.appendingPathComponent(DocumentFileNames.metadata, isDirectory: false)
             if manager.fileExists(atPath: metaURL.path) == false {
                 let metadata = DocumentMetadata(
                     id: UUID().uuidString,
@@ -201,9 +201,9 @@ public struct AppGroupStagingImporter: Sendable {
     static func inboxFileName(for source: URL) -> String {
         let suffix = source.pathExtension.lowercased()
         if suffix == "md" || suffix == "markdown" || suffix == "txt" {
-            return SyncFileNames.sourceMarkdown
+            return DocumentFileNames.sourceMarkdown
         }
-        return SyncFileNames.document
+        return DocumentFileNames.document
     }
 
     /// The `sourceFormat` recorded for a staged item that arrived without a

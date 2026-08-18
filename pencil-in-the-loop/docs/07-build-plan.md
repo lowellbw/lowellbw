@@ -47,8 +47,9 @@ rotation, and split view.
 ## M4 · Review and send
 
 - Review sheet: list, toggles, closing instruction, destination row
-- `ReviewBundleBuilder` → `review.md`, `review.json`, `manifest.json`, and
-  `review.docx` with native anchored Word comments
+- `ReviewBundleBuilder` → `review.md`, `review.json`, `manifest.json`
+  (`review.docx` is deferred to v1.1 — it needs a ZIP container and iOS has no system zip
+  API; see `05-file-contracts.md`)
 - `InkCropper` — bounding box union, 15% padding, page content rendered beneath
 - Atomic outbox write
 - `ReturnPathResolver` and the Sent screen, including the share-sheet fallback
@@ -57,7 +58,9 @@ rotation, and split view.
 ## M5 · Share extension
 
 - "Review" extension accepting PDFs and URLs
-- App Group container, coordinated writes into the same `inbox/`
+- Extension writes an inbox-shaped directory into `<App Group>/staging/`; the app imports
+  it into the real `inbox/` on next foreground. The extension cannot write to the sync
+  folder itself — the security-scoped bookmark does not cross processes
 - URL handling: fetch and render, or save the reader-mode text as PDF
 
 This is small and disproportionately valuable. Don't leave it to last if M4 slips.
@@ -68,6 +71,11 @@ This is small and disproportionately valuable. Don't leave it to last if M4 slip
 - Claude Code MCP server: `send_to_ipad`, `list_reviews`, `get_review`
 - Mac-side watcher: fires the poke trigger, or runs `claude -p … --resume` / `--cloud`
 - Codex variant
+
+The watcher's poke path is built against a command that has not been confirmed to exist
+(`06-integrations.md` § Inbound, route 1). The scheduled check-in is the v1 default and
+needs none of it, so M6 is not blocked — but do not ship `poke` as a sender default until
+that command is real.
 
 ## Definition of done for v1
 

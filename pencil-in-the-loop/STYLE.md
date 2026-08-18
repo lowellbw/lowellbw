@@ -124,8 +124,20 @@ Swift 6, strict concurrency, and the module boundaries carry isolation:
   every view; it is already on. Do write `nonisolated` on a member that has to satisfy a
   nonisolated protocol requirement from Core (see `PreviewEnvironment`'s stubs for the
   pattern).
-- **Every other module is nonisolated.** Core, Storage, Sync, Ingest, Annotate and Export
-  contain no `@MainActor` anything. If you need serialisation, use an `actor`.
+- **Every other module is nonisolated by default.** Core, Storage, Sync, Ingest and
+  Export contain no `@MainActor` anything. If you need serialisation, use an `actor`.
+- **Annotate has four ratified exceptions, and no others.** `PKCanvasView`,
+  `PKToolPicker` and `UIApplication` are main-actor-bound in the SDK, so a type that
+  owns one cannot be anything else, and pretending otherwise in this file would only
+  have produced a rule nobody could keep. The list, which is closed:
+  `PageCanvasController` (owns a `PKCanvasView`), `PageCanvasPool` (owns the
+  controllers), `InkToolPickerController` (owns a `PKToolPicker`), and two members of
+  `InkLifecycleObserver` — its initialiser and its static `flush(using:)` — which read
+  `UIApplication`; the observer type itself is not isolated, so its `deinit` can
+  unregister from wherever it runs. **Ink persistence is not on this list and must not
+  join it**: `InkPersistenceCoordinator` is an `actor`, its `record(_:)` is
+  `nonisolated`, and that is what keeps archiving off the touch path. Anything else in
+  Annotate that reaches for `@MainActor` is a change request, not a local edit.
 - **`@Model` types never cross an actor boundary.** SwiftData model classes are bound to
   the `ModelContext` that made them. They live inside Storage and never leave it.
 - **DTOs do cross.** Everything in `Core/Contracts/DTOs.swift` is a `Sendable` value type
@@ -175,6 +187,14 @@ frozen there, and not to be re-typed anywhere:
   `InkImage.fileName(forPageIndex:)`
 - `SyncFolder.inboxDirectoryName` / `.outboxDirectoryName`,
   `OutboxPayload.reviewDirectorySuffix`
+- `DocumentFileNames` — `document.pdf`, `source.md`, `sourcemap.json`, `meta.json`,
+  `reply.md`, `review.md`. Sync, Ingest, Storage and Export each spelled these; they
+  are a public format and there is one copy now.
+- `DocumentContainer` — the app container's document layout, and `storedPath(for:)` /
+  `url(forStoredPath:)`. **Nothing else may decide where a pinned document lives.**
+  Three Wave 1 units invented three layouts and the cost was documents recorded by
+  absolute path, which stop opening after a reinstall.
+- `GestureTiming.minimumHoldDuration` (0.3), `.longPressDuration` (0.4)
 - `PageGeometry.annotationFriendly`
 - `ReviewBundle.fileName`, `BundleManifest.fileName`
 - `Slug.make(from:)`, `Slug.folderName(date:title:)` — folder names are identities, and

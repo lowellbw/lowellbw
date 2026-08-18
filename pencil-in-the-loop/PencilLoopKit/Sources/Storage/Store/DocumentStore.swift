@@ -289,6 +289,21 @@ public actor DocumentStore: DocumentStoring {
         try requireDocument(id: documentId).pageSnapshots()
     }
 
+    /// One page's archived `PKDrawing` bytes.
+    ///
+    /// - Returns: nil when the page has no ink, when the index is not one this
+    ///   document has, and when the document itself is unknown. A read of
+    ///   something missing is nil, never a throw (Protocols.swift §
+    ///   DocumentStoring).
+    ///
+    /// The point of it is what it does *not* fetch: `pages(documentId:)` hands
+    /// back every page's `drawingData`, which is the whole ink corpus of a
+    /// 300-page document when the caller wanted one canvas.
+    public func drawingData(pageIndex: Int, documentId: UUID) throws -> Data? {
+        guard let row = try documentRow(id: documentId) else { return nil }
+        return existingPage(at: pageIndex, in: row)?.drawingData
+    }
+
     // MARK: - Comments
 
     /// Inserts a comment, minting its id and timestamp.
@@ -332,9 +347,6 @@ public actor DocumentStore: DocumentStoring {
     /// The rows are removed for good by `discardCommentUndoHistory()`, or by the
     /// process ending.
     ///
-    /// - Note: `DocumentStoring`'s doc comment says the store has no undo stack.
-    ///   It does. See the Wave 1 report — this is a documented deviation, not an
-    ///   oversight.
     public func deleteComment(id: UUID) throws {
         let comment = try requireComment(id: id)
         comment.deletedAt = Date()
@@ -351,7 +363,7 @@ public actor DocumentStore: DocumentStoring {
         try requireDocument(id: documentId).visibleComments.map { $0.snapshot() }
     }
 
-    // MARK: - Comment undo (Storage-local API)
+    // MARK: - Comment undo
 
     /// How many deletions can still be undone in this session.
     public var undoableCommentDeletionCount: Int {
@@ -397,7 +409,7 @@ public actor DocumentStore: DocumentStoring {
         return rows.count
     }
 
-    // MARK: - Reading time (Storage-local API)
+    // MARK: - Reading time
 
     /// Adds to a document's accumulated reading time.
     ///
@@ -405,8 +417,6 @@ public actor DocumentStore: DocumentStoring {
     /// `ReviewDraft.timeSpent`. Negative and non-finite values are ignored
     /// rather than corrupting the total.
     ///
-    /// - Note: `DocumentStoring` has no member for this. See the Wave 1 report —
-    ///   it is a contract change request.
     public func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws {
         guard seconds > 0, seconds.isFinite else { return }
         let row = try requireDocument(id: documentId)
@@ -601,8 +611,8 @@ public actor DocumentStore: DocumentStoring {
     private func removePinnedFiles(for document: Document) -> Int64 {
         let manager = FileManager.default
         var targets: [URL] = [StorageLocations.documentDirectory(folderName: document.folderName)]
-        if document.pdfPath.isEmpty == false {
-            targets.append(document.pdfURL)
+        if let pdf = document.pdfURL {
+            targets.append(pdf)
         }
         if let markdown = document.sourceMarkdownURL {
             targets.append(markdown)

@@ -28,9 +28,35 @@
       "type": "array",
       "description": "Every file in the bundle except manifest.json itself, which cannot list its own hash. Sorted by path.",
       "items": { "$ref": "#/$defs/file" }
+    },
+    "complete": {
+      "type": "boolean",
+      "description": "Whether the bundle is finished. Always true in a manifest this app writes, since the manifest is written last. Optional: a watcher treats its absence as complete, and only an explicit false means wait."
+    },
+    "origin": {
+      "$ref": "#/$defs/origin"
     }
   },
   "$defs": {
+    "origin": {
+      "type": "object",
+      "description": "The reviewed document's origin, copied verbatim from its meta.json so the bundle carries its own return path. A watcher reads this before falling back to inbox/<slug>/meta.json, which only resolves while that folder still has the name the bundle expects. Same shape as meta.json's origin block; every field is optional there and every field is optional here.",
+      "additionalProperties": true,
+      "properties": {
+        "kind": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "threadTitle": { "type": "string" },
+        "returnPath": {
+          "type": "object",
+          "additionalProperties": true,
+          "properties": {
+            "type": { "type": "string" },
+            "triggerId": { "type": "string" },
+            "detail": { "type": "string" }
+          }
+        }
+      }
+    },
     "generator": {
       "type": "object",
       "required": ["name", "version"],

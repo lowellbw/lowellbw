@@ -120,7 +120,12 @@ public struct LibraryQuery: Sendable, Hashable {
 
     public var sort: LibrarySort
 
-    /// `false` is newest-first for `.dateAdded`, A–Z for `.title`.
+    /// Plain ascending order: `true` is oldest-first for `.dateAdded` and A–Z
+    /// for `.title`; `false` is newest-first and Z–A.
+    ///
+    /// The default is `false`, which is newest-first — the library's normal
+    /// order — and therefore Z–A when the sort is switched to `.title`. A title
+    /// list wants `ascending: true`.
     public var ascending: Bool
 
     public init(
@@ -159,7 +164,14 @@ public struct DocumentDetail: Sendable, Hashable, Identifiable {
 
     /// The pinned copy inside the app container. Never a file-provider URL —
     /// see CLAUDE.md non-negotiable 2.
-    public var pdfURL: URL
+    ///
+    /// **Nil when this row has no document behind it**: a folder that was seen
+    /// and could not be ingested is recorded by
+    /// `DocumentStoring.recordIngestFailure(folderName:reason:)` and has a
+    /// library row, an error to show, and no bytes. Callers open the reader
+    /// only when this is non-nil; `DocumentSummary.isLocal` is the cheaper
+    /// check for a list row (docs/02-spec.md § S1).
+    public var pdfURL: URL?
 
     /// The original markdown, when there was one.
     public var sourceMarkdownURL: URL?
@@ -186,7 +198,7 @@ public struct DocumentDetail: Sendable, Hashable, Identifiable {
         id: UUID,
         title: String,
         folderName: String,
-        pdfURL: URL,
+        pdfURL: URL?,
         sourceMarkdownURL: URL? = nil,
         sourceMap: SourceMap? = nil,
         pageCount: Int,
@@ -684,6 +696,53 @@ public struct InboxItem: Sendable, Hashable, Identifiable {
 
 /// Something changed in the watched folder.
 ///
+/// What one scan of `inbox/` found, and what it could not read.
+///
+/// `InboxScanning.scan(_:knownFolderNames:)` used to return a bare
+/// `[InboxItem]`, which left it no way to say that a subdirectory had been
+/// skipped — so the contract's promise that a bad folder is reported through
+/// `SyncEvent.ingestFailed` could not be kept by the one type that knew. A
+/// document that quietly never appears is the failure this project can least
+/// afford.
+public struct InboxScanResult: Sendable, Hashable {
+
+    /// One subdirectory the scan could not turn into an item, and why.
+    ///
+    /// A directory holding nothing ingestible — no `document.pdf` and no
+    /// `source.md` — is **not** a skip. That is a directory somebody is still
+    /// writing, and it is simply not there yet. A skip is a directory that
+    /// could not be read at all.
+    public struct Skipped: Sendable, Hashable {
+
+        /// The subdirectory's name, which is the folder name a library error
+        /// row is keyed by.
+        public var folderName: String
+
+        /// A sentence a person can read, for the error row.
+        public var reason: String
+
+        public init(folderName: String, reason: String) {
+            self.folderName = folderName
+            self.reason = reason
+        }
+    }
+
+    /// Items in folder-name order, which is chronological given the date
+    /// prefix.
+    public var items: [InboxItem]
+
+    /// Subdirectories that could not be read. Usually empty.
+    public var skipped: [Skipped]
+
+    public init(items: [InboxItem] = [], skipped: [Skipped] = []) {
+        self.items = items
+        self.skipped = skipped
+    }
+
+    /// Nothing found and nothing skipped.
+    public static let empty = InboxScanResult()
+}
+
 /// Emitted by `FolderWatching`, consumed by Sync. Deliberately coarse: a
 /// watcher's job is to say "look again", not to diff.
 public enum FolderEvent: Sendable, Hashable {

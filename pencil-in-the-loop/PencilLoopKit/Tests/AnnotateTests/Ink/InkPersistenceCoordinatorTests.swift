@@ -125,6 +125,26 @@ final class InkPersistenceCoordinatorTests: XCTestCase {
         XCTAssertEqual(data, bytes)
         let reads = await store.pageReadCount
         XCTAssertEqual(reads, 0)
+        let singleReads = await store.singlePageReadCount
+        XCTAssertEqual(singleReads, 0)
+    }
+
+    func testACacheMissReadsOnePageAndNotTheWholeDocument() async {
+        let bytes = InkTestDrawings.drawing(strokeCount: 2).dataRepresentation()
+        let store = InkTestStore(pages: [PageSnapshot(pageIndex: 7, drawingData: bytes, hasInk: true)])
+        let coordinator = InkPersistenceCoordinator(store: store, policy: .standard)
+
+        let data = await coordinator.drawingData(for: binding(7))
+
+        XCTAssertEqual(data, bytes)
+        let wholeDocumentReads = await store.pageReadCount
+        XCTAssertEqual(
+            wholeDocumentReads,
+            0,
+            "Drawing one page must not fetch the ink of every page (DocumentStoring.drawingData)."
+        )
+        let singleReads = await store.singlePageReadCount
+        XCTAssertEqual(singleReads, 1)
     }
 
     func testErasingEveryStrokeClearsThePageRatherThanStoringAnEmptyArchive() async {

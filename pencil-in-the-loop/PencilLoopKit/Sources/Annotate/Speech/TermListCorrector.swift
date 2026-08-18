@@ -32,6 +32,12 @@ import Core
 /// **On failure:** there is none. Both members are pure and total; an empty
 /// document yields an empty term list, and a transcript that matches nothing
 /// comes back unchanged (Protocols.swift § TranscriptCorrecting).
+///
+/// **The only implementation.** Ingest had a second one with the same signature
+/// and no protocol behind it; it was deleted rather than promoted, because the
+/// terms are wanted while a comment popover is open and are derived then, from
+/// `DocumentDetail.extractedText` and the title. AppUI reaches this through
+/// `AppEnvironment.corrector`.
 public struct TermListCorrector: TranscriptCorrecting {
 
     // MARK: Thresholds

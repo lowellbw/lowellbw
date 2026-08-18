@@ -114,7 +114,7 @@ public struct OutboxWriter: OutboxWriting {
     public func readReply(inReviewDirectory directoryName: String, in folder: SyncFolder) async throws -> String? {
         let url = folder.outboxURL
             .appendingPathComponent(directoryName, isDirectory: true)
-            .appendingPathComponent(SyncFileNames.reply, isDirectory: false)
+            .appendingPathComponent(DocumentFileNames.reply, isDirectory: false)
         guard FileManager.default.fileExists(atPath: url.path) else { return nil }
 
         let data = try CoordinatedFileAccess.read(at: url) { readableURL in
@@ -146,9 +146,9 @@ public struct OutboxWriter: OutboxWriting {
     /// bundle does not discard the reply it already collected.
     private static func carryForwardReply(from existing: URL, to staging: URL) throws {
         let manager = FileManager.default
-        let source = existing.appendingPathComponent(SyncFileNames.reply, isDirectory: false)
+        let source = existing.appendingPathComponent(DocumentFileNames.reply, isDirectory: false)
         guard manager.fileExists(atPath: source.path) else { return }
-        let target = staging.appendingPathComponent(SyncFileNames.reply, isDirectory: false)
+        let target = staging.appendingPathComponent(DocumentFileNames.reply, isDirectory: false)
         guard manager.fileExists(atPath: target.path) == false else { return }
         try manager.copyItem(at: source, to: target)
     }

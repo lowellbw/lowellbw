@@ -22,7 +22,7 @@ final class StorageLocationsTests: XCTestCase {
         XCTAssertEqual(stored, "2026-08-18-auth-refactor-plan/document.pdf")
         XCTAssertFalse(stored.hasPrefix("/"), "a relative path is what survives a reinstall")
         XCTAssertEqual(
-            StorageLocations.url(forStoredPath: stored).standardizedFileURL,
+            StorageLocations.url(forStoredPath: stored)?.standardizedFileURL,
             url.standardizedFileURL
         )
     }
@@ -32,16 +32,15 @@ final class StorageLocationsTests: XCTestCase {
         let stored = StorageLocations.storedPath(for: outside)
         XCTAssertEqual(stored, "/private/var/mobile/elsewhere/document.pdf")
         XCTAssertEqual(
-            StorageLocations.url(forStoredPath: stored).standardizedFileURL,
+            StorageLocations.url(forStoredPath: stored)?.standardizedFileURL,
             outside.standardizedFileURL
         )
     }
 
-    func testAnEmptyPathResolvesToTheDocumentsRoot() {
-        XCTAssertEqual(
-            StorageLocations.url(forStoredPath: "").standardizedFileURL,
-            StorageLocations.documentsRoot().standardizedFileURL
-        )
+    func testAnEmptyPathHasNoURL() {
+        // A row recorded by `recordIngestFailure` has no pinned bytes, and the
+        // documents root is not an honest stand-in for a document.
+        XCTAssertNil(StorageLocations.url(forStoredPath: ""))
     }
 
     func testOnlyPathsInsideTheDocumentsRootAreDeletable() {

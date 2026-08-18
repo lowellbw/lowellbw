@@ -35,7 +35,7 @@ public enum MetadataFile {
     /// - Returns: what was in the file, or `DocumentMetadata.empty` when it was
     ///   missing, unreadable or malformed. Never throws.
     public static func read(inDirectory directoryURL: URL) -> DocumentMetadata {
-        read(at: directoryURL.appendingPathComponent(SyncFileNames.metadata, isDirectory: false))
+        read(at: directoryURL.appendingPathComponent(DocumentFileNames.metadata, isDirectory: false))
     }
 
     /// Reads a `meta.json` at an exact URL.

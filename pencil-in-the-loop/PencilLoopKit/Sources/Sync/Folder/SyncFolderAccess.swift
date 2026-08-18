@@ -34,10 +34,12 @@ import Core
 /// unreadable — documents live in the app container, and losing the folder
 /// costs new documents only (docs/02-spec.md § Cross-cutting).
 ///
-/// - Note: `beginAccess(to:)` / `endAccess(to:wasStarted:)` are not part of
-///   `FolderAccessing`. They exist because the protocol's `withAccess` takes a
-///   synchronous closure, and scanning, pinning and writing all `await` in the
-///   middle. See the type's own documentation for the rule.
+/// - Note: `FolderAccessing` now carries an async `withAccess` overload as
+///   well, so work that suspends is reachable through the protocol.
+///   `beginAccess(to:)` / `endAccess(to:wasStarted:)` remain here, outside the
+///   protocol, for the one caller that opens a scope in one method and closes
+///   it in another — `SyncCoordinator`, whose scan spans several collaborators.
+///   Everything else should use `withAccess`.
 public struct SyncFolderAccess: FolderAccessing {
 
     public init() {}
@@ -128,6 +130,28 @@ public struct SyncFolderAccess: FolderAccessing {
         return try body(folder)
     }
 
+    /// The same, for work that suspends.
+    ///
+    /// The scope is held for the whole of `body`, suspensions included, which
+    /// is what the synchronous overload cannot do and what scanning, pinning
+    /// and writing all need. Same non-re-entrancy rule: do not open another
+    /// scope on the same folder inside `body`.
+    ///
+    /// - Throws: `.accessDenied` when the scope will not open and the root is
+    ///   not readable without one; otherwise whatever `body` threw.
+    public func withAccess<T: Sendable>(
+        to folder: SyncFolder,
+        perform body: @Sendable (SyncFolder) async throws -> T
+    ) async throws -> T {
+        let started = beginAccess(to: folder)
+        defer { endAccess(to: folder, wasStarted: started) }
+
+        guard started || FileManager.default.isReadableFile(atPath: folder.rootURL.path) else {
+            throw PencilLoopError.accessDenied(path: folder.rootURL.path)
+        }
+        return try await body(folder)
+    }
+
     /// Whether the root is reachable right now.
     ///
     /// Never throws: a false answer is information — an ejected volume, a
@@ -173,10 +197,9 @@ public struct SyncFolderAccess: FolderAccessing {
 
     /// Re-resolves a stale bookmark and mints a fresh one.
     ///
-    /// The companion to `resolveFolder(bookmark:)` throwing `.bookmarkStale`:
-    /// the contract says the caller "mints a fresh one from the returned
-    /// folder", and a throwing function returns nothing, so the minting lives
-    /// here. Persist `folder.bookmark` afterwards.
+    /// The recovery half of `resolveFolder(bookmark:)` throwing
+    /// `.bookmarkStale` — a throwing call returns no folder to mint from, so
+    /// the minting happens here. Persist `folder.bookmark` afterwards.
     ///
     /// - Throws: `.folderUnavailable` when the bookmark will not resolve even
     ///   in stale form.

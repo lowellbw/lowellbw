@@ -19,7 +19,7 @@ final class InboxScannerTests: XCTestCase {
         defer { temp.removeAll() }
         try temp.writeInboxDirectory(named: "2026-08-18-auth-refactor-plan")
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertEqual(items.count, 1)
         XCTAssertEqual(items[0].folderName, "2026-08-18-auth-refactor-plan")
@@ -34,7 +34,7 @@ final class InboxScannerTests: XCTestCase {
         defer { temp.removeAll() }
         try temp.writeInboxDirectory(named: "2026-08-18-no-metadata", metaJSON: nil)
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertEqual(items.count, 1)
         XCTAssertNil(items[0].metaURL)
@@ -49,7 +49,7 @@ final class InboxScannerTests: XCTestCase {
             metaJSON: SyncTemporaryFolder.truncatedMetaJSON
         )
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertEqual(items.count, 1)
         XCTAssertTrue(items[0].isIngestible)
@@ -64,7 +64,7 @@ final class InboxScannerTests: XCTestCase {
             markdown: "# Auth refactor plan\n\nBody.\n"
         )
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertEqual(items.count, 1)
         XCTAssertNil(items[0].pdfURL)
@@ -77,7 +77,7 @@ final class InboxScannerTests: XCTestCase {
         defer { temp.removeAll() }
         try temp.writeInboxDirectory(named: "2026-08-18-meta-only", pdf: nil)
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertTrue(items.isEmpty, "a folder with only a meta.json is one somebody is still writing")
     }
@@ -88,7 +88,7 @@ final class InboxScannerTests: XCTestCase {
         try temp.writeHiddenStagingDirectory(named: ".2026-08-18-plan.4F2C.tmp")
         try temp.writeInboxDirectory(named: "2026-08-18-plan")
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertEqual(items.map { $0.folderName }, ["2026-08-18-plan"])
     }
@@ -100,7 +100,7 @@ final class InboxScannerTests: XCTestCase {
         try temp.writeInboxDirectory(named: "2026-08-17-first")
         try temp.writeInboxDirectory(named: "2026-08-18-middle")
 
-        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: [])
+        let items = try await InboxScanner().scan(temp.folder, knownFolderNames: []).items
 
         XCTAssertEqual(items.map { $0.folderName }, [
             "2026-08-17-first",
@@ -115,8 +115,8 @@ final class InboxScannerTests: XCTestCase {
         try temp.writeInboxDirectory(named: "2026-08-18-known")
         let scanner = InboxScanner()
 
-        let first = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"])
-        let second = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"])
+        let first = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
+        let second = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
 
         XCTAssertEqual(first.count, 1, "a cold scanner has no memory, so it reports and lets the pin check decide")
         XCTAssertTrue(second.isEmpty, "nothing changed, so there is nothing to look at again")
@@ -136,7 +136,7 @@ final class InboxScannerTests: XCTestCase {
             ofItemAtPath: pdf.path
         )
 
-        let again = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-rewritten"])
+        let again = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-rewritten"]).items
 
         XCTAssertEqual(again.map { $0.folderName }, ["2026-08-18-rewritten"])
     }
@@ -149,7 +149,7 @@ final class InboxScannerTests: XCTestCase {
         _ = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"])
 
         await scanner.forgetSeenFolders()
-        let again = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"])
+        let again = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
 
         XCTAssertEqual(again.count, 1)
     }

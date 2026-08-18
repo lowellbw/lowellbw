@@ -22,6 +22,12 @@ Behaviours: search across document text *and* recognised handwriting; sort by da
 or title; swipe to archive; pull to force a folder re-scan. Tapping a row opens the reader
 in the detail column.
 
+Pull-to-refresh is not a courtesy control. File coordination does not reliably see every
+change a provider makes in the background, so the sync layer polls and treats every
+notification as "look again" rather than as news (`04-flows.md` § F1). Pull-to-refresh is
+the same scan, on demand, and it is what the user reaches for when a document they know
+was sent has not appeared yet.
+
 The library must be fully usable with no network. Anything not yet downloaded shows as
 dimmed and non-openable rather than failing on tap.
 
@@ -44,6 +50,24 @@ Full-bleed continuous-scroll PDF. Chrome auto-hides on scroll, returns on tap.
 | Two-finger tap | Undo (system standard) |
 
 **Comment markers** sit in the page margin at the vertical position of their anchor.
+
+**The long-press is a stroke until it isn't.** A Pencil held still for 0.4s is, as far as
+`PKCanvasView` is concerned, a perfectly good stroke — a dot — and it has already been
+drawn by the time the press is recognised. The obvious fix, delaying touch delivery to the
+canvas until the gesture resolves, is not available: it puts work on the touch path, which
+`03-architecture.md` forbids outright. Ink latency is the one budget with no slack in it.
+
+So the approach is the other way round: let the dot be drawn, and take it back. A
+pencil-only `UILongPressGestureRecognizer` sits alongside the canvas, does not delay or
+cancel its touches, and on recognition cancels the in-flight stroke — the canvas keeps
+receiving touches at full speed, and a comment gesture removes the dot it started as. The
+0.4s threshold and the 0.3s minimum hold live in `Core` so the recogniser and the recording
+state machine cannot drift apart.
+
+Two things about this only a device will tell you: whether the dot is visible for long
+enough to register as a glitch, and whether 0.4s is the right threshold with a real hand
+resting on a real screen. **This is the top item on the device-iteration list.** Expect to
+change the number, and possibly to fade the cancelled stroke out rather than removing it.
 
 ## S3 · Comment popover
 

@@ -71,7 +71,7 @@ public struct ReplyScanner: Sendable {
             if SyncFileNames.isHidden(name) { continue }
             guard name.hasSuffix(OutboxPayload.reviewDirectorySuffix) else { continue }
 
-            let replyURL = entry.appendingPathComponent(SyncFileNames.reply, isDirectory: false)
+            let replyURL = entry.appendingPathComponent(DocumentFileNames.reply, isDirectory: false)
             guard manager.fileExists(atPath: replyURL.path) else { continue }
 
             let values = try? replyURL.resourceValues(forKeys: [.contentModificationDateKey])

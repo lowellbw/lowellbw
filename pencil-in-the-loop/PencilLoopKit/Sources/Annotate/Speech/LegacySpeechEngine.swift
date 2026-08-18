@@ -114,6 +114,26 @@ public actor LegacySpeechEngine: SpeechTranscribing {
 
     // MARK: Recording
 
+    /// Opens the audio session and prepares the engine graph, so the press that
+    /// follows does not pay for it.
+    ///
+    /// Idempotent, non-throwing, best-effort (Protocols.swift §
+    /// SpeechTranscribing). It does nothing when a recording is already
+    /// running, and nothing when microphone permission has not been granted
+    /// yet — warming must never be what makes the system permission alert
+    /// appear, because the user has not asked for anything at that point.
+    public func prewarm() async {
+        guard streamContinuation == nil else { return }
+        guard SpeechAvailability.microphone() == .granted else { return }
+        do {
+            try await capture.prewarm()
+        } catch {
+            // Best-effort by contract: the failure repeats in `transcribe`,
+            // where there is a popover to show it.
+            logger.debug("Speech prewarm did nothing: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
     public nonisolated func transcribe(
         contextualTerms: [String]
     ) -> AsyncThrowingStream<TranscriptionUpdate, Error> {

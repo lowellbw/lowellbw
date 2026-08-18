@@ -3,8 +3,9 @@
 //  IngestTests
 //
 //  Title precedence is a frozen order (DocumentMetadata.swift § title,
-//  docs/02-spec.md § S1) and the term list is what Speech is biased with
-//  (docs/03-architecture.md § 4).
+//  docs/02-spec.md § S1). The term-list tests moved out with the term list
+//  itself; the one implementation lives in Annotate and is covered by
+//  Tests/AnnotateTests/Speech/TermListCorrectorTests.swift.
 //
 
 import XCTest
@@ -123,58 +124,5 @@ final class MetadataExtractorTests: XCTestCase {
         XCTAssertEqual(extractor.pageCount(measured: 7, claimed: 4), 7)
         XCTAssertEqual(extractor.pageCount(measured: 0, claimed: 4), 4)
         XCTAssertEqual(extractor.pageCount(measured: 0, claimed: nil), 0)
-    }
-
-    // MARK: - Speech terms
-
-    func testTitleWordsComeFirst() {
-        let terms = extractor.terms(
-            forDocumentText: "The service calls fetchToken repeatedly.",
-            title: "Auth refactor plan"
-        )
-        XCTAssertEqual(Array(terms.prefix(3)), ["Auth", "refactor", "plan"])
-    }
-
-    func testIdentifiersAreCollectedAheadOfProperNouns() {
-        let text = """
-        The fetchToken call in auth_service.swift returns a RefreshToken.
-        Margaret reviewed it. fetchToken is called twice.
-        """
-        let terms = extractor.terms(forDocumentText: text, title: "")
-        XCTAssertTrue(terms.contains("fetchToken"))
-        XCTAssertTrue(terms.contains("auth_service.swift"))
-        XCTAssertTrue(terms.contains("RefreshToken"))
-        XCTAssertTrue(terms.contains("Margaret"))
-
-        let identifier = try? XCTUnwrap(terms.firstIndex(of: "fetchToken"))
-        let proper = try? XCTUnwrap(terms.firstIndex(of: "Margaret"))
-        XCTAssertTrue((identifier ?? 0) < (proper ?? 0))
-    }
-
-    func testTermsAreDeduplicatedAndStopWordsDropped() {
-        let terms = extractor.terms(
-            forDocumentText: "fetchToken fetchToken The the WHERE",
-            title: "fetchToken"
-        )
-        XCTAssertEqual(terms.filter { $0.lowercased() == "fetchtoken" }.count, 1)
-        XCTAssertFalse(terms.contains { $0.lowercased() == "the" })
-    }
-
-    func testTermsAreCappedForTheFallbackEngine() {
-        let words = (0 ..< 400).map { "identifier_\($0)" }.joined(separator: " ")
-        let terms = extractor.terms(forDocumentText: words, title: "")
-        XCTAssertEqual(terms.count, MetadataExtractor.maximumTerms)
-    }
-
-    func testTermsAreStableAcrossRuns() {
-        let text = "alphaOne betaTwo gammaThree alphaOne betaTwo"
-        XCTAssertEqual(
-            extractor.terms(forDocumentText: text, title: "Doc"),
-            extractor.terms(forDocumentText: text, title: "Doc")
-        )
-    }
-
-    func testAnUninterestingDocumentYieldsNothing() {
-        XCTAssertTrue(extractor.terms(forDocumentText: "the and for with that", title: "").isEmpty)
     }
 }

@@ -176,7 +176,7 @@ final class SwiftMarkdownAdapterTests: XCTestCase {
     func testCodeBlockKeepsItsTextVerbatimAndNamesItsLanguage() throws {
         let markdown = "before\n\n```swift\nlet x = 1\nlet y = 2\n```\n\nafter\n"
         let document = try adapter.parse(markdown)
-        guard case let .codeBlock(language, code, range)? = document.blocks.first(where: { block in
+        guard case let .codeBlock(language, code, contentRange, range)? = document.blocks.first(where: { block in
             if case .codeBlock = block { return true }
             return false
         }) else {
@@ -189,16 +189,27 @@ final class SwiftMarkdownAdapterTests: XCTestCase {
         XCTAssertTrue(quoted.contains("let x = 1"))
         XCTAssertFalse(quoted.contains("before"))
         XCTAssertFalse(quoted.contains("after"))
+
+        // The content range names the code and not the fences, which is what an
+        // agent asked to edit the code needs (MarkdownIR.swift § codeBlock).
+        XCTAssertEqual(contentRange.substring(of: markdown), code)
+        XCTAssertTrue(contentRange.start >= range.start)
+        XCTAssertTrue(contentRange.end <= range.end)
     }
 
     func testIndentedCodeBlockHasNoLanguage() throws {
         let markdown = "text\n\n    indented code\n"
         let document = try adapter.parse(markdown)
-        guard case let .codeBlock(language, code, _)? = document.blocks.last else {
+        guard case let .codeBlock(language, code, contentRange, range)? = document.blocks.last else {
             return XCTFail("expected a code block")
         }
         XCTAssertNil(language)
         XCTAssertTrue(code.contains("indented code"))
+
+        // An indented block has no fences to exclude, and the parser strips the
+        // indentation from `code`, so the content range falls back to the block
+        // range rather than guessing.
+        XCTAssertEqual(contentRange, range)
     }
 
     func testTableCellsCarryTheirOwnRanges() throws {

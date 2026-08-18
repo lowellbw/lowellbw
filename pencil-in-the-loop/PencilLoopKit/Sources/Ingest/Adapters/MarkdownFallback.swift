@@ -21,7 +21,9 @@ public enum MarkdownFallback {
 
     /// The whole source as one preformatted block.
     ///
-    /// The block's `sourceRange` covers the entire file, so the source map is
+    /// The block's `sourceRange` covers the entire file — and so does its
+    /// `contentRange`, because there are no fences to exclude when the whole
+    /// file *is* the content. The source map is
     /// coarse but never wrong: every comment anchored on the page resolves to
     /// the document rather than to a passage. That is the honest answer when
     /// nothing finer is known.
@@ -32,6 +34,7 @@ public enum MarkdownFallback {
         let block = MarkdownBlock.codeBlock(
             language: nil,
             code: markdown,
+            contentRange: SourceRange.whole(of: markdown),
             sourceRange: SourceRange.whole(of: markdown)
         )
         return MarkdownDocument(source: markdown, blocks: [block], title: headingLine(in: markdown))

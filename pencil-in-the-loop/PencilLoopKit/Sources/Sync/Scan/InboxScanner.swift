@@ -19,8 +19,9 @@ import Core
 /// `InboxScanning`, over `FileManager` and `NSFileCoordinator`.
 ///
 /// **On failure:** throws `.folderUnavailable` when `inbox/` itself cannot be
-/// read. A single unreadable subdirectory is logged and skipped, never
-/// propagated — one bad folder must not stop the scan.
+/// read. A single unreadable subdirectory is skipped and returned in
+/// `InboxScanResult.skipped`, never propagated — one bad folder must not stop
+/// the scan, and it must not vanish either.
 ///
 /// Scanning is cheap and idempotent. Pull-to-refresh calls it, the watcher
 /// calls it, and first launch calls it.
@@ -39,9 +40,9 @@ public actor InboxScanner: InboxScanning {
     ///   - knownFolderNames: names already in the library. A known folder is
     ///     skipped unless its contents changed since this scanner last looked.
     /// - Returns: items in folder-name order, which is chronological given the
-    ///   date prefix.
+    ///   date prefix, plus every subdirectory that could not be read.
     /// - Throws: `.folderUnavailable` when `inbox/` cannot be listed.
-    public func scan(_ folder: SyncFolder, knownFolderNames: Set<String>) async throws -> [InboxItem] {
+    public func scan(_ folder: SyncFolder, knownFolderNames: Set<String>) async throws -> InboxScanResult {
         let entries: [URL]
         do {
             entries = try CoordinatedFileAccess.read(at: folder.inboxURL) { readableURL in
@@ -58,6 +59,7 @@ public actor InboxScanner: InboxScanning {
         }
 
         var found: [InboxItem] = []
+        var skipped: [InboxScanResult.Skipped] = []
         for entry in entries.sorted(by: { $0.lastPathComponent < $1.lastPathComponent }) {
             let name = entry.lastPathComponent
             if SyncFileNames.isHidden(name) { continue }
@@ -68,8 +70,15 @@ public actor InboxScanner: InboxScanning {
                 item = try await self.item(at: entry)
             } catch {
                 // One unreadable directory is skipped, never propagated
-                // (Protocols.swift § InboxScanning).
+                // (Protocols.swift § InboxScanning) — and reported, so the
+                // coordinator can show an error row rather than nothing.
                 SyncLog.scan.error("Skipping \(name): \(error.localizedDescription)")
+                skipped.append(
+                    InboxScanResult.Skipped(
+                        folderName: name,
+                        reason: "The folder could not be read. \(error.localizedDescription)"
+                    )
+                )
                 continue
             }
             guard let item else { continue }
@@ -83,7 +92,7 @@ public actor InboxScanner: InboxScanning {
             }
             found.append(item)
         }
-        return found
+        return InboxScanResult(items: found, skipped: skipped)
     }
 
     /// Examines one directory, for the watcher's targeted case.
@@ -119,10 +128,10 @@ public actor InboxScanner: InboxScanning {
         let item = InboxItem(
             folderName: directoryURL.lastPathComponent,
             directoryURL: directoryURL,
-            pdfURL: byName[SyncFileNames.document],
-            sourceMarkdownURL: byName[SyncFileNames.sourceMarkdown],
-            sourceMapURL: byName[SyncFileNames.sourceMap],
-            metaURL: byName[SyncFileNames.metadata],
+            pdfURL: byName[DocumentFileNames.document],
+            sourceMarkdownURL: byName[DocumentFileNames.sourceMarkdown],
+            sourceMapURL: byName[DocumentFileNames.sourceMap],
+            metaURL: byName[DocumentFileNames.metadata],
             modifiedAt: newest,
             byteCount: bytes
         )

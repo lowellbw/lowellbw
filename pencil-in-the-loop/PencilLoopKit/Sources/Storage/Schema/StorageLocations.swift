@@ -2,109 +2,78 @@
 //  StorageLocations.swift
 //  Storage
 //
-//  The on-disk layout. One place that knows where the store file lives, where a
-//  pinned document lives, and how an absolute URL becomes something safe to
-//  persist.
+//  Storage's own on-disk business: where the SwiftData store file lives, and
+//  how many bytes a directory holds for the Settings row.
 //
-//  Why paths are stored relative: the app container's absolute path contains a
-//  UUID the system regenerates on reinstall and, historically, across some OS
-//  upgrades. A `URL` written into the store today can therefore point at nothing
-//  tomorrow, and the symptom is a library full of documents that will not open —
-//  which is exactly the failure "always local" exists to prevent
-//  (docs/02-spec.md § Cross-cutting). So the store keeps container-relative
-//  paths and resolves them on every read.
+//  ─── THE LAYOUT MOVED TO CORE ────────────────────────────────────────────────
+//  The container layout — the documents root, a document's directory, and the
+//  relative-path encoding that survives a reinstall — is now defined once, in
+//  `Core/Contracts/DocumentContainer.swift`. It had to move: Sync pins the
+//  bytes and Ingest materialises them, and neither may import Storage, so a
+//  layout that lived here was a layout each of them re-invented (see that
+//  file's header for what that cost).
+//
+//  The five members below forward to it unchanged. They are kept because
+//  Storage's own call sites and tests read better with one import, and because
+//  `storeURL()` and the byte counting genuinely belong to this module. **Do not
+//  add a member here that decides where anything lives.** That decision has one
+//  home and it is not this file.
 //
 
 import Foundation
+import Core
 
 /// Where everything Storage owns lives on disk.
 ///
-/// **On failure:** every member returns a URL rather than throwing. When the
-/// system will not hand over Application Support — which should not happen on a
-/// device — the temporary directory is used instead, so the app still runs and
-/// the failure shows up as an empty library rather than a crash on launch.
+/// **On failure:** every member returns a value rather than throwing. A path
+/// that cannot be resolved shows up as the read that follows it failing, with a
+/// reason, rather than as a crash on launch.
 public enum StorageLocations {
-
-    /// Container subdirectory for everything this app persists.
-    public static let directoryName = "PencilLoop"
-
-    /// Where pinned document folders live, one directory per document.
-    public static let documentsDirectoryName = "Documents"
 
     /// The SwiftData store file.
     public static let storeFileName = "Library.store"
 
-    /// `Application Support/PencilLoop`, created if absent.
+    /// `Application Support/PencilLoop`. Forwards to `DocumentContainer`.
     public static func containerRoot() -> URL {
-        let manager = FileManager.default
-        let base = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-            ?? manager.temporaryDirectory
-        let root = base.appendingPathComponent(directoryName, isDirectory: true)
-        ensureDirectory(root)
-        return root
+        DocumentContainer.containerRoot()
     }
 
-    /// `Application Support/PencilLoop/Documents`, created if absent.
-    ///
-    /// Ingest materialises each document into `documentsRoot()/<folderName>/`
-    /// and hands Storage the absolute URLs; Storage stores them relative to this
-    /// directory.
+    /// `Application Support/PencilLoop/Documents`. Forwards to
+    /// `DocumentContainer`.
     public static func documentsRoot() -> URL {
-        let root = containerRoot().appendingPathComponent(documentsDirectoryName, isDirectory: true)
-        ensureDirectory(root)
-        return root
+        DocumentContainer.documentsRoot()
     }
 
-    /// The pinned directory for one document folder name, e.g.
-    /// `…/Documents/2026-08-18-auth-refactor-plan`.
-    ///
-    /// Not created here — Ingest creates it when it copies the bytes in.
+    /// The pinned directory for one document folder name. Forwards to
+    /// `DocumentContainer`.
     public static func documentDirectory(folderName: String) -> URL {
-        documentsRoot().appendingPathComponent(folderName, isDirectory: true)
+        DocumentContainer.documentDirectory(folderName: folderName)
+    }
+
+    /// Turns an absolute URL into the string the store persists. Forwards to
+    /// `DocumentContainer`.
+    public static func storedPath(for url: URL) -> String {
+        DocumentContainer.storedPath(for: url)
+    }
+
+    /// The inverse of `storedPath(for:)`. Forwards to `DocumentContainer`.
+    ///
+    /// - Returns: nil for an empty path — a row recorded by
+    ///   `recordIngestFailure(folderName:reason:)` has no pinned bytes and no
+    ///   honest URL.
+    public static func url(forStoredPath path: String) -> URL? {
+        DocumentContainer.url(forStoredPath: path)
+    }
+
+    /// True when `url` sits inside the app's own documents root. Forwards to
+    /// `DocumentContainer`.
+    public static func isInsideDocumentsRoot(_ url: URL) -> Bool {
+        DocumentContainer.isInsideDocumentsRoot(url)
     }
 
     /// The SwiftData store file URL.
     public static func storeURL() -> URL {
-        containerRoot().appendingPathComponent(storeFileName, isDirectory: false)
-    }
-
-    /// Turns an absolute URL into the string the store persists.
-    ///
-    /// - Returns: a path relative to `documentsRoot()` when the URL is inside
-    ///   it, and the absolute path otherwise. An absolute result is legal — a
-    ///   document pinned somewhere unusual still has to be findable — but it is
-    ///   the case that does not survive a reinstall, so Ingest should keep
-    ///   everything under `documentsRoot()`.
-    public static func storedPath(for url: URL) -> String {
-        let root = documentsRoot().standardizedFileURL.path(percentEncoded: false)
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        let candidate = url.standardizedFileURL.path(percentEncoded: false)
-        if candidate.hasPrefix(prefix) {
-            return String(candidate.dropFirst(prefix.count))
-        }
-        return candidate
-    }
-
-    /// The inverse of `storedPath(for:)`.
-    ///
-    /// - Returns: `documentsRoot()` itself for an empty path. A row with no
-    ///   pinned bytes — one recorded by `recordIngestFailure` — has an empty
-    ///   path, and callers must check `DocumentSummary.isLocal` before opening
-    ///   anything (docs/02-spec.md § S1).
-    public static func url(forStoredPath path: String) -> URL {
-        guard !path.isEmpty else { return documentsRoot() }
-        if path.hasPrefix("/") { return URL(fileURLWithPath: path) }
-        return documentsRoot().appendingPathComponent(path)
-    }
-
-    /// True when `url` sits inside the app's own documents root.
-    ///
-    /// Every destructive operation checks this first: `purgeArchived()` deletes
-    /// files, and it must never be able to reach the user's sync folder.
-    public static func isInsideDocumentsRoot(_ url: URL) -> Bool {
-        let root = documentsRoot().standardizedFileURL.path(percentEncoded: false)
-        let prefix = root.hasSuffix("/") ? root : root + "/"
-        return url.standardizedFileURL.path(percentEncoded: false).hasPrefix(prefix)
+        DocumentContainer.containerRoot().appendingPathComponent(storeFileName, isDirectory: false)
     }
 
     /// Total bytes of every regular file under `url`, following no symlinks.
@@ -144,11 +113,5 @@ public enum StorageLocations {
             return 0
         }
         return Int64(size)
-    }
-
-    private static func ensureDirectory(_ url: URL) {
-        let manager = FileManager.default
-        if manager.fileExists(atPath: url.path(percentEncoded: false)) { return }
-        try? manager.createDirectory(at: url, withIntermediateDirectories: true)
     }
 }

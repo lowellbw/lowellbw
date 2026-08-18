@@ -66,7 +66,15 @@ public enum MarkdownBlock: Codable, Sendable, Hashable {
     /// verbatim including its newlines. Rendering must not re-wrap it — the
     /// authoring guidance in docs/06-integrations.md keeps lines under 76
     /// characters precisely so that no wrapping is needed.
-    case codeBlock(language: String?, code: String, sourceRange: SourceRange)
+    ///
+    /// **Two ranges, because a fenced block has two extents.** `sourceRange`
+    /// covers the whole node, fences included, like every other case here;
+    /// `contentRange` covers `code` alone. An agent asked to edit the code a
+    /// comment points at needs the second — handed the first it would replace
+    /// the fences too — and the first is what the source map and every
+    /// enclosing node are built from. They are equal when there were no fences,
+    /// which is an indented code block or a raw HTML block.
+    case codeBlock(language: String?, code: String, contentRange: SourceRange, sourceRange: SourceRange)
 
     /// `ordered` distinguishes `1.` from `-`. Nested lists appear as a `list`
     /// block inside an item's `blocks`.
@@ -85,12 +93,22 @@ public enum MarkdownBlock: Codable, Sendable, Hashable {
         switch self {
         case let .heading(_, _, range): return range
         case let .paragraph(_, range): return range
-        case let .codeBlock(_, _, range): return range
+        case let .codeBlock(_, _, _, range): return range
         case let .list(_, _, range): return range
         case let .blockquote(_, range): return range
         case let .table(_, _, range): return range
         case let .thematicBreak(range): return range
         }
+    }
+
+    /// The range of the node's *content*, which differs from `sourceRange`
+    /// only for a fenced code block.
+    ///
+    /// Use this when the bytes are going to be quoted or replaced; use
+    /// `sourceRange` when the node is being located.
+    public var contentRange: SourceRange {
+        if case let .codeBlock(_, _, range, _) = self { return range }
+        return sourceRange
     }
 
     /// Text with all formatting dropped. Used for search, term lists and the
@@ -101,7 +119,7 @@ public enum MarkdownBlock: Codable, Sendable, Hashable {
             return inlines.map(\.text).joined()
         case let .paragraph(inlines, _):
             return inlines.map(\.text).joined()
-        case let .codeBlock(_, code, _):
+        case let .codeBlock(_, code, _, _):
             return code
         case let .list(_, items, _):
             return items.map(\.plainText).joined(separator: "\n")

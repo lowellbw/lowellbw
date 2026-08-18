@@ -139,6 +139,10 @@ public actor InkPersistenceCoordinator {
     /// and would then let the next stroke overwrite it.
     ///
     /// - Returns: archived `PKDrawing` bytes, or nil when the page has no ink.
+    ///
+    /// A cache miss now costs one page's read rather than the document's — the
+    /// whole-corpus fetch this used to do was the workaround for
+    /// `DocumentStoring` having no per-page accessor, and it has one.
     public func drawingData(for binding: InkPageBinding) async -> Data? {
         self.absorbMailboxNow()
         if let page = self.pending[binding] {
@@ -147,11 +151,7 @@ public actor InkPersistenceCoordinator {
         if self.cachedDocumentId == binding.documentId, let cached = self.cache[binding] {
             return cached
         }
-        if self.cachedDocumentId != binding.documentId {
-            await self.loadCache(documentId: binding.documentId)
-            return self.cache[binding]
-        }
-        return nil
+        return await self.loadPage(binding)
     }
 
     // MARK: - Flushing
@@ -346,13 +346,33 @@ public actor InkPersistenceCoordinator {
 
     // MARK: - Support
 
-    private func loadCache(documentId: UUID) async {
+    /// Reads one page's ink from the store and caches it.
+    ///
+    /// One page, not the document: `DocumentStoring.drawingData(pageIndex:
+    /// documentId:)` exists precisely so that scrolling onto an uncached page
+    /// does not fetch the ink of every other page to draw one. A document
+    /// opened through `preload(_:documentId:)` — which is the normal path,
+    /// since the reader already holds `DocumentDetail.pages` — never gets here
+    /// at all.
+    ///
+    /// - Returns: nil when the page has no ink and when the read failed. A
+    ///   failed read renders the page empty until the next write rather than
+    ///   failing the document (docs/04-flows.md § F3).
+    private func loadPage(_ binding: InkPageBinding) async -> Data? {
+        if self.cachedDocumentId != binding.documentId {
+            self.cache.removeAll(keepingCapacity: false)
+            self.cachedDocumentId = binding.documentId
+        }
         do {
-            let pages = try await self.store.pages(documentId: documentId)
-            self.preload(pages, documentId: documentId)
+            let data = try await self.store.drawingData(
+                pageIndex: binding.pageIndex,
+                documentId: binding.documentId
+            )
+            self.cache[binding] = data
+            return data
         } catch {
-            InkLog.persistence.error("Could not read a document's pages; ink for this page will render empty until the next write.")
-            self.cachedDocumentId = documentId
+            InkLog.persistence.error("Could not read a page's ink; it will render empty until the next write.")
+            return nil
         }
     }
 

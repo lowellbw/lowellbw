@@ -53,6 +53,7 @@ actor FakeSpeechEngine: SpeechTranscribing {
 
     private(set) var receivedTerms: [String] = []
     private(set) var prepareCount = 0
+    private(set) var prewarmCount = 0
     private(set) var startCount = 0
     private(set) var stopCount = 0
 
@@ -69,6 +70,13 @@ actor FakeSpeechEngine: SpeechTranscribing {
 
     func prepareAssets() async {
         prepareCount += 1
+    }
+
+    /// Counted rather than acted on. A prewarm is best-effort by contract, so
+    /// the only thing a test can assert about it is that it happened and that
+    /// it changed nothing.
+    func prewarm() async {
+        prewarmCount += 1
     }
 
     nonisolated func transcribe(

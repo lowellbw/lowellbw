@@ -160,11 +160,15 @@ let package = Package(
 
         // MARK: - Tests
 
+        // Every one of these `import Core` as well as its own target. That
+        // worked by transitive visibility and would have stopped working the
+        // day a target's dependency on Core became implementation-only, so
+        // Core is declared rather than assumed. AnnotateTests already did.
         .testTarget(name: "CoreTests", dependencies: ["Core"]),
-        .testTarget(name: "StorageTests", dependencies: ["Storage"]),
-        .testTarget(name: "SyncTests", dependencies: ["Sync"]),
-        .testTarget(name: "IngestTests", dependencies: ["Ingest"]),
-        .testTarget(name: "AnnotateTests", dependencies: ["Annotate"]),
-        .testTarget(name: "ExportTests", dependencies: ["Export"])
+        .testTarget(name: "StorageTests", dependencies: ["Storage", "Core"]),
+        .testTarget(name: "SyncTests", dependencies: ["Sync", "Core"]),
+        .testTarget(name: "IngestTests", dependencies: ["Ingest", "Core"]),
+        .testTarget(name: "AnnotateTests", dependencies: ["Annotate", "Core"]),
+        .testTarget(name: "ExportTests", dependencies: ["Export", "Core"])
     ]
 )

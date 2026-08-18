@@ -55,7 +55,7 @@ final class DocumentIngestorTests: XCTestCase {
         // sourcemap.json written next to document.pdf.
         let mapURL = container
             .appendingPathComponent("2026-08-18-auth-refactor-plan")
-            .appendingPathComponent(IngestFileNames.sourceMap)
+            .appendingPathComponent(DocumentFileNames.sourceMap)
         XCTAssertTrue(FileManager.default.fileExists(atPath: mapURL.path))
 
         let map = try XCTUnwrap(ingested.sourceMap)
@@ -108,7 +108,7 @@ final class DocumentIngestorTests: XCTestCase {
 
         let document = try SwiftMarkdownAdapter().parse("# A paper\n\nWith a sentence in it.\n")
         let rendered = try MarkdownPDFRenderer().render(document, geometry: .annotationFriendly)
-        let pdfURL = directory.appendingPathComponent(IngestFileNames.pdf)
+        let pdfURL = directory.appendingPathComponent(DocumentFileNames.document)
         try rendered.pdfData.write(to: pdfURL)
 
         let item = InboxItem(
@@ -187,12 +187,12 @@ final class DocumentIngestorTests: XCTestCase {
         let directory = root.appendingPathComponent("inbox/\(folderName)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
-        let markdownURL = directory.appendingPathComponent(IngestFileNames.markdown)
+        let markdownURL = directory.appendingPathComponent(DocumentFileNames.sourceMarkdown)
         try Data(markdown.utf8).write(to: markdownURL)
 
         var metaURL: URL?
         if let meta {
-            let url = directory.appendingPathComponent(IngestFileNames.meta)
+            let url = directory.appendingPathComponent(DocumentFileNames.metadata)
             try Data(meta.utf8).write(to: url)
             metaURL = url
         }

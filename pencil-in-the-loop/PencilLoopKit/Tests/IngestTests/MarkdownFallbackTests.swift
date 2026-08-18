@@ -17,12 +17,13 @@ final class MarkdownFallbackTests: XCTestCase {
 
         XCTAssertEqual(document.source, markdown)
         XCTAssertEqual(document.blocks.count, 1)
-        guard case let .codeBlock(language, code, range) = document.blocks[0] else {
+        guard case let .codeBlock(language, code, contentRange, range) = document.blocks[0] else {
             return XCTFail("expected one preformatted block")
         }
         XCTAssertNil(language)
         XCTAssertEqual(code, markdown)
         XCTAssertEqual(range, SourceRange.whole(of: markdown))
+        XCTAssertEqual(contentRange, range)
         XCTAssertEqual(range.substring(of: markdown), markdown)
     }
 

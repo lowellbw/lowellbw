@@ -47,13 +47,37 @@ public struct BundleManifest: Codable, Sendable, Hashable {
     /// cannot list its own hash, so it does not list itself.
     public var files: [ManifestFile]
 
+    /// Whether the bundle is finished.
+    ///
+    /// Always `true` in a manifest this app writes — the manifest is written
+    /// last, so its existence already says so. It is written explicitly because
+    /// the watcher's completeness rule is "does not say `complete: false`", and
+    /// a tool assembling a bundle over several syncs has somewhere to say
+    /// "not yet" (integrations/mac-watcher § completeness).
+    public var complete: Bool
+
+    /// Where the reviewed document came from, copied from its `meta.json`.
+    ///
+    /// The watcher resolves a return path most-specific-first and looks here
+    /// before anything else. Without it, it always fell through to reading
+    /// `inbox/<slug>/meta.json` — which works only while the inbox folder is
+    /// still called what the bundle expects, so a renamed or tidied-away inbox
+    /// folder lost the route back to the conversation. The bundle now carries
+    /// its own answer.
+    ///
+    /// Nil when the document had no metadata at all, which is a manually added
+    /// document with no return path — readable, just not routable.
+    public var origin: Origin?
+
     public init(
         version: Int = BundleManifest.currentVersion,
         documentId: String,
         reviewFolder: String,
         createdAt: Date,
         generator: GeneratorInfo,
-        files: [ManifestFile]
+        files: [ManifestFile],
+        complete: Bool = true,
+        origin: Origin? = nil
     ) {
         self.version = version
         self.documentId = documentId
@@ -61,6 +85,8 @@ public struct BundleManifest: Codable, Sendable, Hashable {
         self.createdAt = createdAt
         self.generator = generator
         self.files = files
+        self.complete = complete
+        self.origin = origin
     }
 
     public static let currentVersion = 1

@@ -2,47 +2,28 @@
 //  SyncFileNames.swift
 //  Sync · Support
 //
-//  The file names inside an `inbox/` directory, plus the staging convention
-//  every writer of this folder shares. Spelled once, here, because a folder
-//  layout is a public contract (docs/05-file-contracts.md) and a typo in it is
-//  a document that never appears.
+//  The staging convention every writer of the sync folder shares.
 //
-//  ─── CONTRACT REQUEST (U2) ───────────────────────────────────────────────────
-//  `meta.json`, `document.pdf`, `source.md`, `sourcemap.json` and `reply.md`
-//  are read by Sync and written by Ingest, Export and the share extension, so
-//  by STYLE.md § 9 they belong in Core/Contracts beside
-//  `SyncFolder.inboxDirectoryName`. Until they land there this is Sync's only
-//  copy; nothing else in this module re-types them.
-//  ─────────────────────────────────────────────────────────────────────────────
+//  The file *names* inside a directory — `document.pdf`, `source.md`,
+//  `sourcemap.json`, `meta.json`, `reply.md` — used to be here as well. They
+//  now live in `DocumentFileNames` (Core/Contracts), because Ingest, Storage
+//  and Export spell them too and a folder layout is a public contract
+//  (docs/05-file-contracts.md, STYLE.md § 9). What remains here is the part
+//  that is genuinely Sync's: how a directory is staged before it is renamed
+//  into place, and what a scan must ignore.
 //
 
 import Foundation
 
-/// The names of the files this module reads and writes inside the sync folder.
+/// How this module stages a directory before renaming it into place, and what
+/// it ignores while scanning.
+///
+/// The names of the files inside a directory are in `DocumentFileNames`
+/// (Core/Contracts).
 ///
 /// **Never fails.** Everything here is a pure string operation; there is no
 /// filesystem access and nothing to be unavailable.
 public enum SyncFileNames {
-
-    /// `meta.json` — where a document came from (docs/05-file-contracts.md).
-    public static let metadata = "meta.json"
-
-    /// `document.pdf` — rendered or original, always present when there is one.
-    public static let document = "document.pdf"
-
-    /// `source.md` — the original markdown, when there was one.
-    public static let sourceMarkdown = "source.md"
-
-    /// `sourcemap.json` — rendered rect to source range, when generated.
-    public static let sourceMap = "sourcemap.json"
-
-    /// `reply.md` — what an agent writes back into a review directory
-    /// (docs/04-flows.md § F6).
-    public static let reply = "reply.md"
-
-    /// Every file name an inbox directory may hold, in the order a reader
-    /// should prefer them.
-    public static let inboxFiles = [document, sourceMarkdown, sourceMap, metadata]
 
     /// The suffix every staging directory carries.
     ///

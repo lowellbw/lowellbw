@@ -89,7 +89,7 @@ final class VoiceRecordingMachineTests: XCTestCase {
     func testExactlyThreeHundredMillisecondsIsAHoldNotAMisTouch() {
         var machine = heldMachine()
         let effects = machine.handle(
-            .touchUp(at: start.addingTimeInterval(VoiceRecordingMachine.minimumHoldDuration))
+            .touchUp(at: start.addingTimeInterval(GestureTiming.minimumHoldDuration))
         )
 
         XCTAssertEqual(effects, [.stopTranscribing])

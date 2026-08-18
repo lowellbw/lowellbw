@@ -59,6 +59,30 @@ public struct SwiftMarkdownAdapter: MarkdownParsing {
         return MarkdownDocument(source: markdown, blocks: blocks, title: firstHeadingText(in: blocks))
     }
 
+    // MARK: - Ranges
+
+    /// Where a code block's *content* sits inside the block's own range.
+    ///
+    /// A fenced block's `sourceRange` covers the fences; `code` does not. The
+    /// literal the parser read is searched for inside the block, which is the
+    /// same verification `SourceOffsetIndex.locate(_:near:)` does everywhere
+    /// else in this file.
+    ///
+    /// - Returns: the block range itself when the content cannot be located —
+    ///   an indented code block, whose leading four spaces the parser strips,
+    ///   is the case that happens in practice. Coarse but never wrong, which is
+    ///   the rule for every range here (MarkdownIR.swift header).
+    private func contentRange(
+        of code: String,
+        in blockRange: Core.SourceRange,
+        index: SourceOffsetIndex
+    ) -> Core.SourceRange {
+        guard code.isEmpty == false else { return blockRange }
+        guard let located = index.locate(code, near: blockRange) else { return blockRange }
+        guard located.start >= blockRange.start, located.end <= blockRange.end else { return blockRange }
+        return located
+    }
+
     // MARK: - Blocks
 
     private func convert(_ markup: Markup, index: SourceOffsetIndex) -> [MarkdownBlock] {
@@ -79,13 +103,19 @@ public struct SwiftMarkdownAdapter: MarkdownParsing {
             return [.codeBlock(
                 language: trimmed(code.language),
                 code: code.code,
+                contentRange: contentRange(of: code.code, in: blockRange, index: index),
                 sourceRange: blockRange
             )]
 
         case let html as HTMLBlock:
             // Raw HTML is shown verbatim rather than dropped. A block that
             // vanishes from the page is a hole in the source map.
-            return [.codeBlock(language: "html", code: html.rawHTML, sourceRange: blockRange)]
+            return [.codeBlock(
+                language: "html",
+                code: html.rawHTML,
+                contentRange: blockRange,
+                sourceRange: blockRange
+            )]
 
         case let quote as BlockQuote:
             var inner: [MarkdownBlock] = []
