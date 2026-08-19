@@ -251,6 +251,64 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertTrue(queue.isEmpty, "a sent review does not stay queued")
     }
 
+    /// The gap this test exists for: the review sheet the user queued from has
+    /// been closed for hours by the time the folder comes back, so nobody was
+    /// left to record the delivery. The reply text still landed — Sync calls
+    /// `recordReply` itself — but the directory name never did, and "Open reply
+    /// as document" needs exactly that (`ReviewStatus.directoryName`), so a
+    /// review sent this way could never be reopened.
+    func testAFlushedQueueIsRecordedAsSentWithNoSheetOpen() async throws {
+        let temp = try SyncTemporaryFolder()
+        defer { temp.removeAll() }
+        let missingRoot = temp.rootURL.appendingPathComponent("later", isDirectory: true)
+        let folder = SyncFolder(rootURL: missingRoot)
+        let store = SyncTestStore()
+        let payload = OutboxWriterTests.payload()
+        let coordinator = SyncCoordinator(
+            folder: folder,
+            store: store,
+            ingester: SyncTestIngester(),
+            pinner: InboxItemPinner(destinationRoot: temp.pinnedRootURL),
+            queue: OutboxQueue(rootURL: temp.queueRootURL),
+            importsAppGroupStaging: false
+        )
+
+        let queued = try await coordinator.send(payload)
+        XCTAssertTrue(queued.isQueued)
+        let beforeFlush = await store.reviewsSent
+        XCTAssertTrue(
+            beforeFlush.isEmpty,
+            "nothing has reached outbox/ yet, so there is no delivery to record (docs/04-flows.md § F7)"
+        )
+
+        // The folder comes back, and the scan that notices flushes the queue.
+        try FileManager.default.createDirectory(at: folder.inboxURL, withIntermediateDirectories: true)
+        _ = try await coordinator.refresh()
+
+        let sent = await store.reviewsSent
+        XCTAssertEqual(sent.count, 1, "the bundle is in outbox/ now, and that is a review that has been sent")
+        XCTAssertEqual(sent.first?.documentId, payload.documentId)
+        XCTAssertEqual(
+            sent.first?.directoryName,
+            payload.directoryName,
+            "the directory an agent's reply will come back in, which is the whole point of recording it"
+        )
+
+        let states = await store.stateChanges
+        XCTAssertEqual(
+            states.map { $0.state },
+            [.read],
+            "the sheet moves a delivered review to Read on the equivalent path; the two must not disagree"
+        )
+
+        let status = try await store.reviewStatus(documentId: payload.documentId)
+        XCTAssertEqual(
+            status?.directoryName,
+            payload.directoryName,
+            "'Open reply as document' reads this and used to find nothing"
+        )
+    }
+
     // MARK: - Replies
 
     func testAReplyIsRecordedAgainstItsDocument() async throws {

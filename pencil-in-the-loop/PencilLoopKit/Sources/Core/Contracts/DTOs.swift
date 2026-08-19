@@ -68,6 +68,22 @@ public struct DocumentSummary: Sendable, Hashable, Identifiable {
     /// handle for matching a reply back to its document.
     public var folderName: String
 
+    /// Why the last attempt to refresh this document failed, when it failed and
+    /// the document is still readable. Nil when the last attempt succeeded.
+    ///
+    /// **Not an error state, and deliberately not `localState`.** `.unavailable`
+    /// means there are no bytes to open and the row is dimmed; this means the
+    /// bytes are exactly the ones the user read yesterday and the row opens as
+    /// it always did — what it cannot promise is that it is *current*. A
+    /// document that quietly stopped updating used to be indistinguishable from
+    /// one that is fine, because the only surfacing was a transient
+    /// `SyncEvent.ingestFailed` that was gone by the next scan.
+    ///
+    /// Nil when `localState` is already `.unavailable`: the store records both
+    /// for such a row, and the two carry the same sentence, so a row would
+    /// otherwise say the same thing twice in two different voices.
+    public var refreshFailureReason: String?
+
     public init(
         id: UUID,
         title: String,
@@ -78,7 +94,8 @@ public struct DocumentSummary: Sendable, Hashable, Identifiable {
         localState: DocumentLocalState,
         commentCount: Int,
         hasInk: Bool,
-        folderName: String
+        folderName: String,
+        refreshFailureReason: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -90,6 +107,7 @@ public struct DocumentSummary: Sendable, Hashable, Identifiable {
         self.commentCount = commentCount
         self.hasInk = hasInk
         self.folderName = folderName
+        self.refreshFailureReason = refreshFailureReason
     }
 }
 

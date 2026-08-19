@@ -40,7 +40,25 @@ public enum LibraryFormat {
         if let state = localStateDescription(summary.localState) {
             pieces.append(state)
         }
+        if let note = refreshNote(for: summary) {
+            pieces.append(note)
+        }
         return pieces.joined(separator: ", ")
+    }
+
+    /// The quiet second line under a row that still opens but did not refresh,
+    /// or nil for a row with nothing to add — which is nearly all of them.
+    ///
+    /// Phrased like `localStateDescription(_:)`'s "Unavailable. …" so the two
+    /// read as the same kind of remark, and worded so the row's own claim is
+    /// the small one: this document is readable and this is the copy you have.
+    /// The reason is the store's sentence, shown verbatim — a note that will
+    /// not say what went wrong is a note that cannot be acted on
+    /// (DTOs.swift § `DocumentSummary.refreshFailureReason`).
+    public static func refreshNote(for summary: DocumentSummary) -> String? {
+        guard let reason = summary.refreshFailureReason,
+              reason.isEmpty == false else { return nil }
+        return "Couldn’t update. " + reason
     }
 
     /// What the trailing indicator means, spelled out. Nil for a document that

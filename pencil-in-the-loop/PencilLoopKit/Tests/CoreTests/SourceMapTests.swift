@@ -78,6 +78,50 @@ final class SourceMapTests: XCTestCase {
         XCTAssertNil(map.rect(containing: 100_000))
     }
 
+    /// Entries need not be disjoint: a producer that records a list item *and*
+    /// each bullet inside it has done nothing wrong. Taking the first match
+    /// would scroll to the whole list where the caller asked for one line, and
+    /// which one is "first" is only the order the renderer happened to append
+    /// in. The tightest containing entry is the answer to the question asked.
+    func testTheTightestContainingEntryWins() throws {
+        let nested = SourceMap(entries: [
+            SourceMap.Entry(
+                pageIndex: 0,
+                rect: NormalisedRect(x: 0.1, y: 0.10, width: 0.7, height: 0.30),
+                range: SourceRange(start: 0, end: 400)
+            ),
+            SourceMap.Entry(
+                pageIndex: 0,
+                rect: NormalisedRect(x: 0.1, y: 0.22, width: 0.7, height: 0.02),
+                range: SourceRange(start: 120, end: 160)
+            )
+        ])
+
+        let hit = try XCTUnwrap(nested.rect(containing: 130))
+        XCTAssertEqual(hit.rect.height, 0.02, accuracy: 1e-12, "the bullet, not the list it sits in")
+        XCTAssertEqual(hit.rect.y, 0.22, accuracy: 1e-12)
+    }
+
+    /// An offset the coarse entry covers and the fine one does not still
+    /// resolves — narrowing the answer must not lose it.
+    func testACoarseEntryStillAnswersWhereNothingFinerDoes() throws {
+        let nested = SourceMap(entries: [
+            SourceMap.Entry(
+                pageIndex: 0,
+                rect: NormalisedRect(x: 0.1, y: 0.10, width: 0.7, height: 0.30),
+                range: SourceRange(start: 0, end: 400)
+            ),
+            SourceMap.Entry(
+                pageIndex: 0,
+                rect: NormalisedRect(x: 0.1, y: 0.22, width: 0.7, height: 0.02),
+                range: SourceRange(start: 120, end: 160)
+            )
+        ])
+
+        let hit = try XCTUnwrap(nested.rect(containing: 300))
+        XCTAssertEqual(hit.rect.height, 0.30, accuracy: 1e-12)
+    }
+
     // MARK: - range → rects
 
     func testRectsForARangeSpanningTwoPagesUnionsPerPage() {

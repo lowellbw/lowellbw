@@ -26,6 +26,28 @@ actor SyncTestStore: DocumentStoring {
     /// Document id to reply text, as `recordReply` recorded it.
     private(set) var replies: [UUID: String] = [:]
 
+    /// One `recordReviewSent` call.
+    struct SentReview: Sendable, Hashable {
+        var documentId: UUID
+        var sentAt: Date
+        var directoryName: String
+    }
+
+    /// One `setState` call.
+    struct StateChange: Sendable, Hashable {
+        var state: DocState
+        var documentId: UUID
+    }
+
+    /// Every `recordReviewSent` call, in order. A queued bundle that reaches
+    /// `outbox/` on a later scan is recorded by the coordinator, not by the
+    /// review sheet, so this is where that shows up (`SyncCoordinator`
+    /// § `flushQueue`).
+    private(set) var reviewsSent: [SentReview] = []
+
+    /// Every `setState` call, in order.
+    private(set) var stateChanges: [StateChange] = []
+
     private var rows: [DocumentSummary] = []
 
     init(existing: [DocumentSummary] = []) {
@@ -103,7 +125,9 @@ actor SyncTestStore: DocumentStoring {
 
     // MARK: - Reading state
 
-    func setState(_ state: DocState, documentId: UUID) throws {}
+    func setState(_ state: DocState, documentId: UUID) throws {
+        stateChanges.append(StateChange(state: state, documentId: documentId))
+    }
 
     func setLastReadPage(_ pageIndex: Int, documentId: UUID) throws {}
 
@@ -144,16 +168,27 @@ actor SyncTestStore: DocumentStoring {
 
     // MARK: - Review lifecycle
 
-    func recordReviewSent(documentId: UUID, at date: Date, directoryName: String) throws {}
+    func recordReviewSent(documentId: UUID, at date: Date, directoryName: String) throws {
+        reviewsSent.append(
+            SentReview(documentId: documentId, sentAt: date, directoryName: directoryName)
+        )
+    }
 
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {
         replies[documentId] = text
     }
 
-    /// Reports whatever `recordReply(documentId:text:receivedAt:)` was told, so
-    /// a reply-loop test can read back what the coordinator stored.
+    /// Reports whatever the coordinator recorded, so a reply-loop test can read
+    /// back what it stored — the reply text, and the directory a flushed
+    /// bundle went out in, which is what "Open reply as document" needs.
     func reviewStatus(documentId: UUID) throws -> ReviewStatus? {
-        ReviewStatus(documentId: documentId, replyText: replies[documentId])
+        let sent = reviewsSent.last(where: { $0.documentId == documentId })
+        return ReviewStatus(
+            documentId: documentId,
+            sentAt: sent?.sentAt,
+            directoryName: sent?.directoryName,
+            replyText: replies[documentId]
+        )
     }
 
     // MARK: - Reading time

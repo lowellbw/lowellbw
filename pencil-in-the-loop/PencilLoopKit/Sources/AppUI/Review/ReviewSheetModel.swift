@@ -91,12 +91,14 @@ final class ReviewSheetModel {
     /// A `reviewWritten` event that arrived before the outcome existed.
     private var confirmedWriteAt: Date?
 
-    /// True once this send has been recorded against the document.
+    /// True once *this sheet* has recorded its send against the document.
     ///
-    /// A queued bundle is recorded when it reaches the folder rather than when
-    /// it is queued (`recordDelivery(of:at:environment:)`), so the two routes to
-    /// that write — the send itself and a later `.reviewWritten` — need to know
-    /// the other has not already taken it.
+    /// One delivery, one writer. The sheet records the bundle its own Send
+    /// press put in `outbox/`; `SyncCoordinator.flushQueue` records a queued
+    /// bundle that reached `outbox/` later, because a flush waits on the
+    /// network and usually happens long after this sheet has gone. Nothing on
+    /// the event path writes here, so this guards one route rather than
+    /// arbitrating between two.
     private var hasRecordedSend = false
 
     /// A `folderUnavailable` event that arrived before the outcome existed.
@@ -178,25 +180,27 @@ final class ReviewSheetModel {
     /// ignored.
     func apply(_ event: SyncEvent) {
         switch event {
-        case let .reviewWritten(documentId, directoryURL):
+        case let .reviewWritten(documentId, _):
             guard documentId == document.id else { return }
             let now = Date()
             confirmedWriteAt = now
             outcome?.delivery = .written(at: now)
 
-            // A queue that has just been flushed. Only now is there a bundle in
-            // `outbox/` for an agent to answer, so only now is there a review to
-            // record. `.sending` is excluded because `send(_:)` is mid-flight
-            // and records that case itself, with the date the user pressed Send.
+            // A queue that has just been flushed — the one delivery this sheet
+            // does not own. `SyncCoordinator.flushQueue` records it against the
+            // document *before* emitting this event, because it is the only
+            // component still there when a flush lands hours after the sheet
+            // was closed. So by the time this arrives the store already says
+            // sent, read, and in which directory; the sheet reads that back
+            // rather than writing a second delivery whose only difference from
+            // the first would be a worse timestamp.
+            //
+            // `.sending` is excluded because `send(_:)` is mid-flight with its
+            // own write to `outbox/`, and that one the sheet does own — it
+            // records it in `recordDelivery(of:at:environment:)`, with the date
+            // the user pressed Send rather than the date the event arrived.
             if let environment, phase != .sending {
-                let directoryName = outcome?.directoryName ?? directoryURL.lastPathComponent
-                Task { [weak self] in
-                    await self?.recordSent(
-                        at: now,
-                        directoryName: directoryName,
-                        environment: environment
-                    )
-                }
+                refreshReviewStatus(environment: environment)
             }
 
         case let .folderUnavailable(reason):
@@ -213,15 +217,20 @@ final class ReviewSheetModel {
             // (`DocumentStoring.recordReply`), and reading the folder from here
             // would need a security scope the UI does not hold. It used to try
             // anyway and usually failed.
-            if let environment { reloadReply(environment: environment) }
+            if let environment { refreshReviewStatus(environment: environment) }
 
         default:
             return
         }
     }
 
-    /// Re-reads the stored review status and shows whatever reply it holds.
-    func reloadReply(environment: any AppEnvironment) {
+    /// Re-reads the stored review status: when it was sent, where the bundle
+    /// went, and whatever reply it holds.
+    ///
+    /// The sheet's way of catching up with a write somebody else made — Sync
+    /// records both a flushed delivery and an arriving reply — rather than
+    /// guessing at it from the event.
+    func refreshReviewStatus(environment: any AppEnvironment) {
         Task { [weak self] in
             guard let self else { return }
             guard let status = try? await environment.store.reviewStatus(documentId: self.document.id) else { return }
@@ -465,13 +474,12 @@ final class ReviewSheetModel {
     /// that is not in the outbox to be found. What is true of a queued review is
     /// that the document has work outstanding on it, so it is put in
     /// `.reviewing` — sent-pending, which is neither sent nor un-reviewed — and
-    /// the Sent screen says "Will send when online" over the same fact. The
-    /// review is recorded when `SyncEvent.reviewWritten` reports the queue
-    /// flushed, which is the first moment there is a delivery to record.
+    /// the Sent screen says "Will send when online" over the same fact.
     ///
-    /// A queued bundle whose flush happens after this sheet has closed is not
-    /// recorded by anyone — see this unit's report; the fix belongs in
-    /// `SyncCoordinator.flushQueue`, which is the only thing that always knows.
+    /// The queued bundle is recorded by `SyncCoordinator.flushQueue` at the
+    /// moment it reaches `outbox/`, whether or not this sheet still exists —
+    /// and it usually does not, since a flush waits on the network. This sheet
+    /// only reflects it, on `SyncEvent.reviewWritten`.
     private func recordDelivery(
         of written: WrittenReview,
         at sentAt: Date,

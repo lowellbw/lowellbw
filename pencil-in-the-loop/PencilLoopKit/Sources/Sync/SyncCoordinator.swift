@@ -397,6 +397,21 @@ public actor SyncCoordinator: SyncCoordinating {
     /// Sends anything that was queued while the folder was away. Stops at the
     /// first failure — if the folder is still unreachable, the rest will not
     /// fare better, and they stay queued.
+    ///
+    /// **This is where a queued review becomes a sent one.** A bundle that went
+    /// to the local queue is sent-pending: the review sheet leaves the document
+    /// in `.reviewing` with no `sentAt`, because nothing has reached `outbox/`
+    /// for an agent to answer yet (docs/04-flows.md § F7). The moment the write
+    /// below succeeds, it has — and this actor is the only thing that always
+    /// knows, because the sheet the user sent from has usually been closed for
+    /// hours by then. Recording it here is what makes the reply loop reachable:
+    /// `recordReply` alone stores the text, and without the directory name
+    /// "Open reply as document" has nothing to ask
+    /// `ingestReply(fromReviewDirectory:)` for.
+    ///
+    /// Recorded *before* the event goes out, so a sheet that is still open
+    /// reads a store that already agrees with it rather than writing a second,
+    /// competing delivery of its own (ReviewSheetModel § `apply(_:)`).
     private func flushQueue() async {
         let waiting = queue.queuedPayloads()
         guard waiting.isEmpty == false else { return }
@@ -404,12 +419,35 @@ public actor SyncCoordinator: SyncCoordinating {
             do {
                 let written = try await writer.write(payload, to: folder)
                 queue.remove(payload.directoryName)
+                await recordDelivery(of: written)
                 emit(.reviewWritten(documentId: written.documentId, directoryURL: written.directoryURL))
             } catch {
                 SyncLog.coordinator.notice("\(payload.directoryName) is still waiting to be sent.")
                 return
             }
         }
+    }
+
+    /// Records a flushed bundle against its document: sent, in the directory a
+    /// reply will come back in, and read.
+    ///
+    /// Both writes, because both are what the review sheet does on the
+    /// equivalent path (`ReviewSheetModel.recordSent`) and a document that is
+    /// recorded as sent while still sitting under "Reviewing" is the two of
+    /// them disagreeing in front of the user.
+    ///
+    /// Failures are swallowed on purpose: the bundle is in `outbox/` either
+    /// way, this is background work, and a store that will not take the note is
+    /// not a reason to leave a delivered review in the queue. A document the
+    /// library has never heard of throws `.documentNotFound` here and is
+    /// exactly that case.
+    private func recordDelivery(of written: WrittenReview) async {
+        try? await store.recordReviewSent(
+            documentId: written.documentId,
+            at: written.writtenAt,
+            directoryName: written.directoryName
+        )
+        try? await store.setState(.read, documentId: written.documentId)
     }
 
     // MARK: - Replies

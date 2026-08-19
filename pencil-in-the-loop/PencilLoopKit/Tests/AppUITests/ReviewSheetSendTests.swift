@@ -14,6 +14,12 @@
 //  "Open reply as document" asked `ingestReply(fromReviewDirectory:)` for a
 //  directory that was not in the outbox to be found.
 //
+//  One delivery, one writer. The sheet records the bundle its own Send press put
+//  in `outbox/`; `SyncCoordinator.flushQueue` records a bundle that got there
+//  later, because a queue flush waits on the network and by then this sheet has
+//  usually been closed for hours. What is asserted here is the sheet's half —
+//  including that it stays out of the half it does not own.
+//
 
 import Foundation
 import XCTest
@@ -71,25 +77,42 @@ final class ReviewSheetSendTests: XCTestCase {
         )
     }
 
-    /// The queue is flushed while the Sent screen is still up. That is the first
-    /// moment there is a bundle in `outbox/` for an agent to answer, so that is
-    /// when the review is recorded.
-    func testAQueuedReviewIsRecordedOnceItReachesTheFolder() async {
+    /// The queue is flushed while the Sent screen is still up.
+    ///
+    /// The delivery is real and is recorded — by `SyncCoordinator.flushQueue`,
+    /// which is the only component still there when a flush lands hours after
+    /// the sheet was closed, and which records it *before* emitting the event
+    /// this sheet is reacting to. The sheet's job here is to render the news and
+    /// read the store back, not to write a second delivery: two writers for one
+    /// delivery is a store whose `sentAt` depends on which of them lost the
+    /// race.
+    func testAFlushedQueueIsShownButNotRecordedBySheet() async throws {
+        let document = AppUITestSamples.detail()
+        let directoryName = OutboxPayload.directoryName(forDocumentFolder: document.folderName)
         let store = AppUITestStore()
         let environment = AppUITestEnvironment(
             store: store,
             sync: AppUITestSyncCoordinator(isQueued: true)
         )
-        let document = AppUITestSamples.detail()
         let model = ReviewSheetModel(document: document)
         model.closingInstruction = "Have a look at the token rotation."
 
-        // `apply(_:)` writes through the environment `load` handed it, which is
+        // `apply(_:)` reads through the environment `load` handed it, which is
         // how the sheet is wired on screen (ReviewSheet § .task).
         await model.load(environment: environment)
         await model.send(environment: environment)
 
-        let directoryName = OutboxPayload.directoryName(forDocumentFolder: document.folderName)
+        // The queue flushes. `SyncCoordinator.flushQueue` writes the bundle to
+        // `outbox/`, records the delivery, and only then emits — these two
+        // calls stand in for it, in that order.
+        try await store.recordReviewSent(
+            documentId: document.id,
+            at: Date(timeIntervalSince1970: 1_787_000_000),
+            directoryName: directoryName
+        )
+        try await store.setState(.read, documentId: document.id)
+        let writesBeforeEvent = await store.writes
+
         model.apply(
             .reviewWritten(
                 documentId: document.id,
@@ -99,59 +122,32 @@ final class ReviewSheetSendTests: XCTestCase {
                 )
             )
         )
-
-        await ReviewSheetSendTests.waitForSends(in: store)
-
-        let sends = await store.recordedSends
-        XCTAssertEqual(
-            sends,
-            [.reviewSent(documentId: document.id, directoryName: directoryName)],
-            "The bundle is in outbox/ now, under the directory a reply will come back in."
-        )
-        let states = await store.recordedStates
-        XCTAssertEqual(states, [.reviewing, .read], "Reviewing while queued, Read once delivered.")
-    }
-
-    /// A second `.reviewWritten` — the event stream tolerates duplicates by
-    /// contract (Protocols.swift § FolderWatching) — must not record twice.
-    func testTheDeliveryIsRecordedOnlyOnce() async {
-        let store = AppUITestStore()
-        let environment = AppUITestEnvironment(
-            store: store,
-            sync: AppUITestSyncCoordinator(isQueued: true)
-        )
-        let document = AppUITestSamples.detail()
-        let model = ReviewSheetModel(document: document)
-        model.closingInstruction = "Have a look at the token rotation."
-
-        await model.load(environment: environment)
-        await model.send(environment: environment)
-
-        let directoryURL = AppUITestSyncCoordinator.directoryURL(
-            for: OutboxPayload.directoryName(forDocumentFolder: document.folderName),
-            isQueued: false
-        )
-        model.apply(.reviewWritten(documentId: document.id, directoryURL: directoryURL))
-        await ReviewSheetSendTests.waitForSends(in: store)
-        model.apply(.reviewWritten(documentId: document.id, directoryURL: directoryURL))
         await ReviewSheetSendTests.settle()
 
-        let sends = await store.recordedSends
-        XCTAssertEqual(sends.count, 1)
+        guard case .written? = model.outcome?.delivery else {
+            XCTFail("The bundle is in outbox/ now, and the Sent screen has to say so.")
+            return
+        }
+        let writesAfterEvent = await store.writes
+        XCTAssertEqual(
+            writesAfterEvent,
+            writesBeforeEvent,
+            "Sync recorded this delivery before the event; a second write here only races its own timestamp."
+        )
+        let states = await store.recordedStates
+        XCTAssertEqual(
+            states,
+            [.reviewing, .read],
+            "Reviewing is the sheet's own write for a queued bundle; Read is Sync's, and there is one of each."
+        )
+        XCTAssertEqual(
+            model.priorReview?.directoryName,
+            directoryName,
+            "and the sheet reads back what Sync recorded, so 'Open reply as document' has its directory"
+        )
     }
 
     // MARK: - Waiting
-
-    /// `apply(_:)` is synchronous and does its writing in a task, so a test has
-    /// to wait for it. Bounded, so a failure is a failed assertion rather than a
-    /// hung suite.
-    private static func waitForSends(in store: AppUITestStore) async {
-        for _ in 0..<200 {
-            let sends = await store.recordedSends
-            if sends.isEmpty == false { return }
-            try? await Task.sleep(for: .milliseconds(5))
-        }
-    }
 
     /// Long enough for a write that should not happen to have happened.
     private static func settle() async {

@@ -410,8 +410,22 @@ extension Document {
             localState: localState,
             commentCount: commentCount,
             hasInk: inkedPageCount > 0,
-            folderName: folderName
+            folderName: folderName,
+            refreshFailureReason: summaryRefreshFailureReason
         )
+    }
+
+    /// The refresh note a row carries, or nil when it has nothing to add.
+    ///
+    /// `recordIngestFailure(folderName:reason:)` records the reason on every
+    /// failure and *additionally* goes `.unavailable` when there are no pinned
+    /// bytes, so a dimmed row holds the same sentence twice. The row that has
+    /// something new to say is the readable one: it opens, and it did not
+    /// update (DTOs.swift § `DocumentSummary.refreshFailureReason`).
+    private var summaryRefreshFailureReason: String? {
+        if case .unavailable = localState { return nil }
+        guard let reason = refreshFailureReason, reason.isEmpty == false else { return nil }
+        return reason
     }
 
     /// Everything the reader needs, in one value.

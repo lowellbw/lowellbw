@@ -131,14 +131,32 @@ public struct SourceMap: Codable, Sendable, Hashable {
     /// edit, or from a comment that was resolved by text match), find the page
     /// and rect to scroll to.
     ///
-    /// - Returns: the first entry whose range contains the offset, or nil when
-    ///   nothing does — offsets inside syntax characters that were never laid
-    ///   out (a fence marker, a link's brackets) legitimately have no geometry.
+    /// - Returns: the **tightest** entry whose range contains the offset — the
+    ///   one with the shortest range, ties broken by document order — or nil
+    ///   when nothing contains it. Offsets inside syntax characters that were
+    ///   never laid out (a fence marker, a link's brackets) legitimately have
+    ///   no geometry.
+    ///
+    /// Tightest rather than first because entries need not be sorted and need
+    /// not be disjoint (see this type's own note on granularity): a producer
+    /// that emits one entry for a list item *and* one per bullet inside it has
+    /// done nothing wrong, and taking the first match would scroll to the whole
+    /// list where the caller asked for one line. Today's renderer emits fine
+    /// entries and either rule would agree; this one goes on agreeing with the
+    /// caller when a coarser entry appears.
     public func rect(containing offset: Int) -> (page: Int, rect: NormalisedRect)? {
+        var tightest: Entry?
         for entry in entries where entry.range.contains(offset: offset) {
-            return (entry.pageIndex, entry.rect)
+            guard let current = tightest else {
+                tightest = entry
+                continue
+            }
+            if entry.range.length < current.range.length {
+                tightest = entry
+            }
         }
-        return nil
+        guard let tightest else { return nil }
+        return (tightest.pageIndex, tightest.rect)
     }
 
     /// Every entry on one page, in the order they were recorded.

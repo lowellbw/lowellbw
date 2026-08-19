@@ -82,6 +82,56 @@ final class LibraryFormatTests: XCTestCase {
         XCTAssertTrue(label.contains("Unavailable. Its folder could not be read."))
     }
 
+    // MARK: - The refresh note
+
+    /// The gap this covers: a document that quietly stopped updating read
+    /// exactly like one that is fine. The only live surfacing was a transient
+    /// `SyncEvent.ingestFailed` in the status line, gone by the next scan.
+    func testARowThatDidNotRefreshSaysSoQuietly() {
+        let summary = AppUITestSamples.summary(
+            addedAt: now,
+            refreshFailureReason: "The download did not finish."
+        )
+        let note = LibraryFormat.refreshNote(for: summary)
+
+        XCTAssertEqual(
+            note,
+            "Couldn’t update. The download did not finish.",
+            "the row still opens, so this reports what is stale rather than what is broken"
+        )
+    }
+
+    func testARowThatRefreshedFineSaysNothing() {
+        let summary = AppUITestSamples.summary(addedAt: now)
+        XCTAssertNil(
+            LibraryFormat.refreshNote(for: summary),
+            "a document that is up to date has no news, and a row of reassurances is noise"
+        )
+    }
+
+    func testAnEmptyReasonIsNotANote() {
+        let summary = AppUITestSamples.summary(addedAt: now, refreshFailureReason: "")
+        XCTAssertNil(LibraryFormat.refreshNote(for: summary), "a note with nothing in it says nothing")
+    }
+
+    /// The note is drawn small and dim, which VoiceOver cannot convey, so the
+    /// label has to carry it (docs/01-design-principles.md § 8).
+    func testTheRefreshNoteIsSpoken() {
+        let summary = AppUITestSamples.summary(
+            addedAt: now,
+            commentCount: 2,
+            refreshFailureReason: "The download did not finish."
+        )
+        let label = LibraryFormat.accessibilityLabel(for: summary, now: now)
+
+        XCTAssertTrue(label.hasPrefix("Auth refactor plan, "))
+        XCTAssertTrue(label.contains("2 comments"))
+        XCTAssertTrue(
+            label.hasSuffix("Couldn’t update. The download did not finish."),
+            "last, because it is the least of what the row says: \(label)"
+        )
+    }
+
     func testACommentCountOfZeroIsNotAnnounced() {
         let summary = AppUITestSamples.summary(addedAt: now, commentCount: 0)
         XCTAssertFalse(LibraryFormat.accessibilityLabel(for: summary, now: now).contains("comment"))

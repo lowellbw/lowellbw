@@ -51,6 +51,65 @@ final class DocumentStoreIngestFailureTests: XCTestCase {
         XCTAssertEqual(note, "The download did not finish.", "the failure is recorded, not discarded")
     }
 
+    /// The gap this covers: the failure was recorded and no DTO carried it, so
+    /// the library could not tell a document that quietly stopped updating from
+    /// one that is fine. The only live surfacing was a transient
+    /// `SyncEvent.ingestFailed`, gone by the next scan.
+    func testAFailedRefreshReachesTheLibraryRow() async throws {
+        let directory = try StorageTestFactory.pinBytes(forFolderName: Self.folderName)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try StorageTestFactory.store()
+        let ingested = StorageTestFactory.ingested(folderName: Self.folderName)
+        try await store.upsert(ingested)
+
+        try await store.recordIngestFailure(
+            folderName: Self.folderName,
+            reason: "The download did not finish."
+        )
+
+        let row = try XCTUnwrap(try await store.summary(id: ingested.id))
+        XCTAssertEqual(
+            row.refreshFailureReason,
+            "The download did not finish.",
+            "the row opens and is not current, and only the second half was ever visible"
+        )
+        XCTAssertTrue(row.isLocal, "and saying so must not dim it")
+    }
+
+    func testASucceedingRefreshClearsTheNoteOnTheRowToo() async throws {
+        let directory = try StorageTestFactory.pinBytes(forFolderName: Self.folderName)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let store = try StorageTestFactory.store()
+        let ingested = StorageTestFactory.ingested(folderName: Self.folderName)
+        try await store.upsert(ingested)
+        try await store.recordIngestFailure(folderName: Self.folderName, reason: "A transient failure.")
+
+        try await store.upsert(StorageTestFactory.ingested(folderName: Self.folderName))
+
+        let row = try XCTUnwrap(try await store.summary(id: ingested.id))
+        XCTAssertNil(row.refreshFailureReason, "the bytes arrived, so the row has nothing to add")
+    }
+
+    /// A row with no bytes already says the whole of it in `.unavailable`, and
+    /// the store records the same sentence in both places. The row must not read
+    /// it out twice in two different voices.
+    func testADimmedRowDoesNotAlsoCarryTheRefreshNote() async throws {
+        let store = try StorageTestFactory.store()
+        let ingested = StorageTestFactory.ingested(folderName: "2026-08-19-never-landed")
+        try await store.upsert(ingested)
+
+        try await store.recordIngestFailure(
+            folderName: "2026-08-19-never-landed",
+            reason: "No document to read."
+        )
+
+        let row = try XCTUnwrap(try await store.summary(id: ingested.id))
+        XCTAssertEqual(row.localState, .unavailable(reason: "No document to read."))
+        XCTAssertNil(row.refreshFailureReason)
+    }
+
     func testASucceedingRefreshClearsTheFailureNote() async throws {
         let directory = try StorageTestFactory.pinBytes(forFolderName: Self.folderName)
         defer { try? FileManager.default.removeItem(at: directory) }

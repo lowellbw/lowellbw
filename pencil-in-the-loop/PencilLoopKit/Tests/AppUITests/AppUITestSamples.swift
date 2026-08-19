@@ -85,7 +85,8 @@ enum AppUITestSamples {
         state: DocState = .unread,
         localState: DocumentLocalState = .local,
         commentCount: Int = 0,
-        hasInk: Bool = false
+        hasInk: Bool = false,
+        refreshFailureReason: String? = nil
     ) -> DocumentSummary {
         DocumentSummary(
             id: id(99),
@@ -97,7 +98,8 @@ enum AppUITestSamples {
             localState: localState,
             commentCount: commentCount,
             hasInk: hasInk,
-            folderName: "2026-08-18-auth-refactor-plan"
+            folderName: "2026-08-18-auth-refactor-plan",
+            refreshFailureReason: refreshFailureReason
         )
     }
 }
