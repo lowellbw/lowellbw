@@ -357,8 +357,9 @@ Getting it onto the iPad properly, rather than by cable. Internal testing needs 
 and no waiting: up to 100 testers on your own team, and a build is usually installable
 within twenty minutes of upload — most of which is Apple processing it.
 
-**One thing is missing and it will fail validation:** the app icon set is empty. See
-"Before the first upload" below.
+Nothing here is missing. The icon exists, export compliance is answered, and the version
+keys are wired — the outstanding items are the ones only you can supply: a Team ID, a
+bundle id, and a build that compiles.
 
 ### What has to be true before an archive
 
@@ -369,22 +370,28 @@ within twenty minutes of upload — most of which is Apple processing it.
 | App Group | both `.entitlements` files | `group.com.example.pencilloop`. Renamed by the same command; it must exist in your developer account and be enabled for **both** app ids. |
 | Version | `Config/Shared.xcconfig` | `MARKETING_VERSION = 0.1.0`, `CURRENT_PROJECT_VERSION = 1`. Both plists read them, so bumping the build number is one line, once. |
 | Export compliance | `Apps/PencilLoop/Info.plist` | `ITSAppUsesNonExemptEncryption` is already `false`. Correct, and see below. |
-| App icon | `Apps/PencilLoop/Assets.xcassets/AppIcon.appiconset` | **Placeholder with no image. Must be filled in.** |
+| App icon | `Apps/PencilLoop/Assets.xcassets/AppIcon.appiconset` | `AppIcon-1024.png`, present and wired. Regenerate with `python3 tooling/icon/make_icon.py`. |
 
-### Before the first upload: the icon
+### The icon
 
-`AppIcon.appiconset/Contents.json` declares one universal 1024×1024 iOS slot and no file
-behind it. That is a deliberate placeholder — nothing in this repository can draw an icon —
-and App Store Connect rejects an upload without one: *"Missing app icon. The bundle does
-not contain an app icon for iPhone/iPad of exactly '1024x1024' pixels."*
+`AppIcon.appiconset` holds a single universal 1024×1024 PNG — opaque, no alpha, square
+corners, because iOS masks the corners itself and an icon with them drawn in gets them
+twice. Xcode 26 derives every other size from that one asset.
 
-Fix it before the first archive, not after:
+It is a paragraph of faint text with a graphite pencil loop circling one passage: what the
+app does, and the loop it is named after. No lettering and no logo, which follows
+`docs/01-design-principles.md` § 6 rather than ignoring it because an icon is involved.
 
-1. Make a 1024×1024 PNG. No alpha channel, no transparency, square corners — iOS masks the
-   corners itself, and an icon with rounded corners drawn in gets them twice.
-2. Drag it into the AppIcon well in Xcode's asset catalog, or save it beside
-   `Contents.json` and add `"filename": "AppIcon.png"` to that one image entry.
-3. Rebuild. Xcode 26 needs only the single 1024 asset; it derives the rest.
+`tooling/icon/make_icon.py` draws it — at 4× and downsampled, which is where the pencil
+edge gets its softness. To change it, edit the script and re-run:
+
+```sh
+python3 tooling/icon/make_icon.py   # writes AppIcon-1024.png beside the script
+```
+
+then copy the result over `Apps/PencilLoop/Assets.xcassets/AppIcon.appiconset/AppIcon-1024.png`.
+Keeping the generator in the repository means the icon is reproducible rather than a binary
+nobody can edit.
 
 The share extension needs no icon of its own — it inherits the app's in the share sheet.
 
@@ -457,7 +464,6 @@ Two things worth knowing for this app specifically:
 
 Plainly, so nothing here is a surprise:
 
-- **The app icon does not exist.** Nothing can be uploaded until it does.
 - `PencilLoopKit/Package.resolved` is not committed, so the dependency version is
   whatever resolves on the machine that archives. Commit it (§1) before you cut a build
   you might have to reproduce.
