@@ -226,15 +226,24 @@ public actor AnalyserSpeechEngine: SpeechTranscribing {
     ) async {
         // One recording at a time: a second `transcribe` finishes the first
         // stream rather than interleaving two (Protocols.swift § Lifecycle).
+        //
+        // The microphone is left alone here. `capture.start()` below tears the
+        // previous tap and engine down itself, and giving the audio session
+        // back on the way into a recording would throw away the pre-warm this
+        // path is timed around (MicrophoneCapture § start).
         finishStream(with: .speechUnavailable(reason: "Another recording started."))
-        await teardown()
+        await teardown(releasingCapture: false)
 
         streamContinuation = continuation
         settledText = ""
 
+        // Every path out of here that is not a recording gives the microphone
+        // back, pre-warmed session included: leaving it active would leave the
+        // system recording indicator lit for a comment that never started.
         let permission = await SpeechAvailability.requestMicrophone()
         guard permission != .denied else {
             finishStream(with: .permissionDenied(what: "Microphone"))
+            await teardown()
             return
         }
 
@@ -244,6 +253,7 @@ public actor AnalyserSpeechEngine: SpeechTranscribing {
             finishStream(with: .speechUnavailable(
                 reason: "The dictation model for \(SpeechAvailability.displayName(for: locale)) is still downloading."
             ))
+            await teardown()
             return
         }
         cachedInstalled = true
@@ -356,7 +366,14 @@ public actor AnalyserSpeechEngine: SpeechTranscribing {
         )
     }
 
-    private func teardown() async {
+    /// Drops the analyser and everything feeding it.
+    ///
+    /// - Parameter releasingCapture: true to give the microphone and the audio
+    ///   session back as well, which is what a failed or finished recording
+    ///   wants. False on the way *into* a recording, where the session has
+    ///   just been pre-warmed and `capture.start()` will replace the tap
+    ///   anyway.
+    private func teardown(releasingCapture: Bool = true) async {
         pumpTask?.cancel()
         pumpTask = nil
         resultsTask?.cancel()
@@ -365,7 +382,9 @@ public actor AnalyserSpeechEngine: SpeechTranscribing {
         inputContinuation = nil
         analyser = nil
         transcriber = nil
-        await capture.stop()
+        if releasingCapture {
+            await capture.stop()
+        }
     }
 
     private func emit(volatile: String) {

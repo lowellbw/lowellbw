@@ -170,22 +170,30 @@ public actor LegacySpeechEngine: SpeechTranscribing {
         contextualTerms: [String],
         continuation: AsyncThrowingStream<TranscriptionUpdate, Error>.Continuation
     ) async {
+        // The microphone is left alone: `capture.start()` replaces the tap
+        // itself, and handing the audio session back on the way into a
+        // recording would throw away the pre-warm (MicrophoneCapture § start).
         finishStream(with: .speechUnavailable(reason: "Another recording started."))
-        await teardown()
+        await teardown(releasingCapture: false)
 
         streamContinuation = continuation
         settledText = ""
         latestText = ""
 
+        // Every path out of here that is not a recording gives the microphone
+        // back, pre-warmed session included: leaving it active would leave the
+        // system recording indicator lit for a comment that never started.
         let microphone = await SpeechAvailability.requestMicrophone()
         guard microphone != .denied else {
             finishStream(with: .permissionDenied(what: "Microphone"))
+            await teardown()
             return
         }
         let speech = await SpeechAvailability.requestSpeechRecognition()
         authorisationRequested = true
         guard speech != .denied else {
             finishStream(with: .permissionDenied(what: "Speech recognition"))
+            await teardown()
             return
         }
 
@@ -193,12 +201,14 @@ public actor LegacySpeechEngine: SpeechTranscribing {
             finishStream(with: .speechUnavailable(
                 reason: "\(SpeechAvailability.displayName(for: locale)) dictation is not available on this device."
             ))
+            await teardown()
             return
         }
         guard recogniser.supportsOnDeviceRecognition else {
             finishStream(with: .speechUnavailable(
                 reason: "The on-device dictation model for \(SpeechAvailability.displayName(for: locale)) has not been installed yet."
             ))
+            await teardown()
             return
         }
 
@@ -293,14 +303,22 @@ public actor LegacySpeechEngine: SpeechTranscribing {
 
     // MARK: Internals
 
-    private func teardown() async {
+    /// Drops the recogniser task and everything feeding it.
+    ///
+    /// - Parameter releasingCapture: true to give the microphone and the audio
+    ///   session back as well, which is what a failed or finished recording
+    ///   wants. False on the way *into* a recording, where the session has just
+    ///   been pre-warmed and `capture.start()` will replace the tap anyway.
+    private func teardown(releasingCapture: Bool = true) async {
         pumpTask?.cancel()
         pumpTask = nil
         request?.endAudio()
         task?.cancel()
         request = nil
         task = nil
-        await capture.stop()
+        if releasingCapture {
+            await capture.stop()
+        }
     }
 
     private func finishStream(with error: PencilLoopError?) {

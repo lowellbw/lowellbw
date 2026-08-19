@@ -7,6 +7,23 @@
 //  (docs/03-architecture.md § Performance targets) is spent almost entirely
 //  here, and whichever engine gets deleted, this survives.
 //
+//  ─── WHAT TO CHECK BY HAND, ON A DEVICE ──────────────────────────────────────
+//  None of this can be unit tested: there is no audio session, no input node
+//  and no microphone anywhere but a real iPad, and a fake of any of them would
+//  prove nothing (STYLE.md § 10). So, with music playing:
+//
+//  1. Hold the Pencil to pre-warm. The music ducks once, and stays ducked.
+//  2. Commit to the comment. The music must **not** unduck and re-duck at the
+//     press — that is `start()` deactivating the session `prewarm()` activated,
+//     which is the whole cost the split exists to avoid.
+//  3. Speak. The first words must be in the transcript: the tap is installed
+//     before the analyser is built, and the stream holds 64 buffers.
+//  4. Release. The music unducks once, when the recording ends.
+//  5. Record for a minute and read the transcript back: repeated or garbled
+//     phrases are the tap's buffers being reused underneath a backlog, which is
+//     what `Chunk.copying(_:)` exists to rule out.
+//  ─────────────────────────────────────────────────────────────────────────────
+//
 
 import Foundation
 import AVFoundation
@@ -36,14 +53,60 @@ actor MicrophoneCapture {
 
     /// One buffer, on its way from the audio thread to an engine.
     ///
-    // SAFETY: the buffer is handed to the tap block by the audio unit and is not
-    // touched again by CoreAudio or by us after it is yielded — one producer on
-    // the audio thread, one consumer on the engine's task, no shared mutation.
-    // Wrapping it is what lets it cross an isolation boundary without a copy,
-    // and a copy per buffer is exactly the work the ink and audio paths cannot
-    // afford.
+    // SAFETY: `buffer` is a private copy, made inside the tap block by
+    // `Chunk.copying(_:)` and handed to nobody else — so the audio unit's own
+    // storage, whose lifetime past the callback is not documented and cannot be
+    // checked here, is never what crosses the isolation boundary. That matters
+    // because the stream buffers up to 64 chunks: the callbacks that produced
+    // them have long returned by the time the engine's task reads them, and a
+    // tap that reuses one backing buffer would deliver garbled or repeated
+    // audio with nothing to show for it in a crash log. One memcpy of 2048
+    // frames is cheap next to that; the ink path, which is the one that cannot
+    // afford work, does not go through here.
     struct Chunk: @unchecked Sendable {
+
         let buffer: AVAudioPCMBuffer
+
+        /// A chunk owning its own copy of `buffer`'s samples.
+        ///
+        /// - Returns: nil for a PCM layout with no typed accessor, which the
+        ///   caller drops. `AVAudioEngine`'s input node is 32-bit float on
+        ///   every device this runs on, so this is a guard rather than a path.
+        static func copying(_ buffer: AVAudioPCMBuffer) -> Chunk? {
+            guard let copy = AVAudioPCMBuffer(
+                pcmFormat: buffer.format,
+                frameCapacity: max(buffer.frameLength, 1)
+            ) else { return nil }
+            copy.frameLength = buffer.frameLength
+
+            // Interleaved layouts put every channel in one allocation and say so
+            // through `stride`; non-interleaved ones give a pointer per channel.
+            // Both are covered by "as many pointers as there are, each holding
+            // frameLength × stride samples".
+            let pointerCount = buffer.format.isInterleaved ? 1 : Int(buffer.format.channelCount)
+            let sampleCount = Int(buffer.frameLength) * buffer.stride
+            guard pointerCount > 0, sampleCount > 0 else { return Chunk(buffer: copy) }
+
+            if let source = buffer.floatChannelData, let destination = copy.floatChannelData {
+                for channel in 0 ..< pointerCount {
+                    destination[channel].update(from: source[channel], count: sampleCount)
+                }
+                return Chunk(buffer: copy)
+            }
+            if let source = buffer.int16ChannelData, let destination = copy.int16ChannelData {
+                for channel in 0 ..< pointerCount {
+                    destination[channel].update(from: source[channel], count: sampleCount)
+                }
+                return Chunk(buffer: copy)
+            }
+            if let source = buffer.int32ChannelData, let destination = copy.int32ChannelData {
+                for channel in 0 ..< pointerCount {
+                    destination[channel].update(from: source[channel], count: sampleCount)
+                }
+                return Chunk(buffer: copy)
+            }
+            return nil
+        }
     }
 
     private let engine = AVAudioEngine()
@@ -87,8 +150,16 @@ actor MicrophoneCapture {
     /// Calling this while a capture is running replaces it: the previous stream
     /// is finished, because there is one microphone and one recording at a time
     /// (Protocols.swift § SpeechTranscribing, Lifecycle).
+    ///
+    /// **It does not give the audio session back first.** Tearing the tap and
+    /// the engine down is cheap; `setActive(true)` and the route negotiation
+    /// behind it are the tens of milliseconds this class is split in two to
+    /// avoid, and deactivating a session `prewarm()` has already activated
+    /// would pay for them again here — with other audio unducking and re-ducking
+    /// between the press and the first word to show for it
+    /// (docs/03-architecture.md § Performance targets).
     func start() throws -> AsyncStream<Chunk> {
-        stop()
+        stopCapture()
         try prewarm()
 
         let (stream, continuation) = AsyncStream<Chunk>.makeStream(
@@ -106,8 +177,13 @@ actor MicrophoneCapture {
             )
         }
 
+        let logger = self.logger
         input.installTap(onBus: 0, bufferSize: 2048, format: format) { buffer, _ in
-            continuation.yield(Chunk(buffer: buffer))
+            guard let chunk = Chunk.copying(buffer) else {
+                logger.debug("A microphone buffer in an unsupported PCM layout was dropped.")
+                return
+            }
+            continuation.yield(chunk)
         }
         isTapped = true
 
@@ -124,7 +200,17 @@ actor MicrophoneCapture {
 
     /// Stops capture and gives the audio session back. Idempotent, and safe to
     /// call from a stream's termination handler.
+    ///
+    /// This is the end of a recording, not the start of the next one — see
+    /// `start()`, which tears the graph down without touching the session.
     func stop() {
+        stopCapture()
+        releaseSession()
+    }
+
+    /// Removes the tap, stops the engine and finishes the stream, leaving the
+    /// audio session exactly as it found it.
+    private func stopCapture() {
         if isTapped {
             engine.inputNode.removeTap(onBus: 0)
             isTapped = false
@@ -134,16 +220,19 @@ actor MicrophoneCapture {
         }
         continuation?.finish()
         continuation = nil
-        if isSessionActive {
-            do {
-                try AVAudioSession.sharedInstance().setActive(
-                    false,
-                    options: .notifyOthersOnDeactivation
-                )
-            } catch {
-                logger.debug("Audio session stayed active: \(error.localizedDescription, privacy: .public)")
-            }
-            isSessionActive = false
+    }
+
+    /// Deactivates the audio session, letting other audio unduck.
+    private func releaseSession() {
+        guard isSessionActive else { return }
+        do {
+            try AVAudioSession.sharedInstance().setActive(
+                false,
+                options: .notifyOthersOnDeactivation
+            )
+        } catch {
+            logger.debug("Audio session stayed active: \(error.localizedDescription, privacy: .public)")
         }
+        isSessionActive = false
     }
 }

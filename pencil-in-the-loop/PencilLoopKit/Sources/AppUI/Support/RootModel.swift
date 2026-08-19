@@ -86,7 +86,7 @@ public final class RootModel {
 
         let built: LiveEnvironment
         do {
-            built = try LiveEnvironment()
+            built = try await RootModel.buildEnvironment()
         } catch let error as PencilLoopError {
             phase = .unusable(message: error.message)
             return
@@ -108,6 +108,24 @@ public final class RootModel {
         // usable before a file provider has been asked anything at all.
         phase = .library
         await attach(bookmark: bookmark, in: built)
+    }
+
+    /// Builds the environment away from the main thread.
+    ///
+    /// `LiveEnvironment.init` opens the SwiftData container, which is a
+    /// synchronous store open and, after a schema change, a migration of
+    /// unbounded length (`LibraryContainer`). `start()` is on the main actor
+    /// because it sets `phase`, so without this hop the whole of that would run
+    /// on the thread that is meant to be putting the first frame up. The
+    /// launch path stays short by leaving the main actor for the one part of it
+    /// that touches disk (docs/03-architecture.md § Performance targets).
+    ///
+    /// - Throws: whatever the initialiser throws, which is only
+    ///   `PencilLoopError.storeWriteFailed`.
+    private nonisolated static func buildEnvironment() async throws -> LiveEnvironment {
+        try await Task.detached(priority: .userInitiated) {
+            try LiveEnvironment()
+        }.value
     }
 
     /// First run finished, or Settings changed the folder: start syncing it and

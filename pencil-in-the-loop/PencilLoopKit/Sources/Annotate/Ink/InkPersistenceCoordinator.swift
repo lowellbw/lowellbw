@@ -24,6 +24,11 @@
 //    `InkLifecycleObserver` calls it under a background-task assertion.
 //  · A store write that throws puts the drawing back and retries with backoff
 //    rather than dropping it.
+//  · A page whose write is *in flight* is no longer pending, so the cache is
+//    what answers for it — which is why the cache is updated before the write
+//    rather than after. A canvas recycled back onto the page during that window
+//    would otherwise be handed the ink as it was when the document opened, and
+//    the next stroke would write that back over the top.
 //
 //  The only ink this design can lose is ink drawn in the last few milliseconds
 //  before a crash, which is the same guarantee Notes gives.
@@ -66,11 +71,20 @@ public actor InkPersistenceCoordinator {
 
     private var pending: [InkPageBinding: PendingPage] = [:]
     private var timers: [InkPageBinding: Task<Void, Never>] = [:]
-    private var recognitionTasks: [InkPageBinding: Task<Void, Never>] = [:]
+    private var recognitions: [InkPageBinding: Recognition] = [:]
+    private var nextRecognitionToken = 0
 
-    /// Last known persisted bytes, per page, for the document currently open.
-    /// Bound to one document at a time: the reader shows one.
-    private var cache: [InkPageBinding: Data] = [:]
+    /// The latest bytes for a page — what has been written, or what is on its
+    /// way to the store right now — for the document currently open. Bound to
+    /// one document at a time: the reader shows one.
+    ///
+    /// **A page with no ink is a value, not a missing key.** The outer optional
+    /// is "have we ever looked at this page", the inner one is "does it carry
+    /// ink"; collapsing the two made every clean page — which is most pages —
+    /// miss the cache and read the store on the path `preload(_:documentId:)`
+    /// exists to make free. Write through `remember(_:for:)` rather than
+    /// through the subscript, which treats a nil value as a removal.
+    private var cache: [InkPageBinding: Data?] = [:]
     private var cachedDocumentId: UUID?
 
     /// - Parameters:
@@ -118,7 +132,9 @@ public actor InkPersistenceCoordinator {
     /// Seeds the cache from a document's snapshots, so a page scrolling into
     /// view can be given its ink without a store read.
     ///
-    /// Call it when a document opens, with `DocumentDetail.pages`.
+    /// Call it when a document opens, with `DocumentDetail.pages`. Pages
+    /// without ink are seeded too: "this page is empty" is an answer, and it is
+    /// the answer most pages need.
     public func preload(_ pages: [PageSnapshot], documentId: UUID) {
         if self.cachedDocumentId != documentId {
             self.cache.removeAll(keepingCapacity: false)
@@ -126,7 +142,7 @@ public actor InkPersistenceCoordinator {
         }
         for page in pages {
             let binding = InkPageBinding(documentId: documentId, pageIndex: page.pageIndex)
-            self.cache[binding] = page.drawingData
+            self.remember(page.drawingData, for: binding)
         }
     }
 
@@ -148,6 +164,8 @@ public actor InkPersistenceCoordinator {
         if let page = self.pending[binding] {
             return InkPersistenceCoordinator.archive(page.drawing)
         }
+        // `cached` is itself an optional: a page known to carry no ink answers
+        // nil from here rather than falling through to the store.
         if self.cachedDocumentId == binding.documentId, let cached = self.cache[binding] {
             return cached
         }
@@ -197,10 +215,10 @@ public actor InkPersistenceCoordinator {
     /// Call when the reader closes a document.
     public func close() async {
         await self.flushAll()
-        for task in self.recognitionTasks.values {
-            task.cancel()
+        for recognition in self.recognitions.values {
+            recognition.task.cancel()
         }
-        self.recognitionTasks.removeAll()
+        self.recognitions.removeAll()
         self.cache.removeAll(keepingCapacity: false)
         self.cachedDocumentId = nil
     }
@@ -262,6 +280,21 @@ public actor InkPersistenceCoordinator {
         guard var page = self.pending.removeValue(forKey: binding) else { return }
 
         let data = InkPersistenceCoordinator.archive(page.drawing)
+
+        // The cache is updated **before** the write, not after it. Between the
+        // removal above and the store returning there is nothing pending for
+        // this page, so `drawingData(for:)` answers from the cache — and a
+        // cache still holding the pre-commit bytes would hand a canvas being
+        // recycled back onto this page the ink as it was when the document
+        // opened, which the next stroke would then write over the top of. The
+        // window is one store write, and the write is triggered by the very
+        // recycle that reads it.
+        //
+        // Caching bytes that are still in flight is safe in the other
+        // direction: if the write fails the page goes back into `pending`, and
+        // pending is read first.
+        self.remember(data, for: binding)
+
         do {
             try await self.store.saveDrawing(
                 data,
@@ -281,10 +314,17 @@ public actor InkPersistenceCoordinator {
             return
         }
 
-        if self.cachedDocumentId == binding.documentId {
-            self.cache[binding] = data
-        }
         self.scheduleRecognition(binding, drawingData: data)
+    }
+
+    /// Records what a page's ink is now, for the document currently open.
+    ///
+    /// Nil means "this page has no ink", which is a fact worth caching; the
+    /// bare subscript would delete the key and send the next reader to the
+    /// store for it.
+    private func remember(_ data: Data?, for binding: InkPageBinding) {
+        guard self.cachedDocumentId == binding.documentId else { return }
+        self.cache.updateValue(data, forKey: binding)
     }
 
     private func scheduleRetry(_ binding: InkPageBinding, attempts: Int) {
@@ -307,41 +347,80 @@ public actor InkPersistenceCoordinator {
     /// serialise behind — and in front of — the next page's autosave. Detached,
     /// it runs on the cooperative pool and touches nothing here.
     private func scheduleRecognition(_ binding: InkPageBinding, drawingData: Data?) {
-        self.recognitionTasks[binding]?.cancel()
+        self.recognitions[binding]?.task.cancel()
+
+        let token = self.nextRecognitionToken
+        self.nextRecognitionToken &+= 1
         let store = self.store
         let recogniser = self.recogniser
         let locale = self.recognitionLocale
         let settle = InkDebouncePolicy.nanoseconds(self.policy.recognitionDelay)
 
+        let task = Task.detached(priority: .utility) { [weak self] in
+            await InkPersistenceCoordinator.recognise(
+                binding: binding,
+                drawingData: drawingData,
+                store: store,
+                recogniser: recogniser,
+                locale: locale,
+                settleNanoseconds: settle
+            )
+            await self?.recognitionFinished(binding, token: token)
+        }
+        self.recognitions[binding] = Recognition(token: token, task: task)
+    }
+
+    /// The recognition itself, off this actor entirely.
+    ///
+    /// Static so the detached task above holds no reference to the coordinator
+    /// while it runs; the only thing it comes back for is to drop its own
+    /// handle.
+    private static func recognise(
+        binding: InkPageBinding,
+        drawingData: Data?,
+        store: any DocumentStoring,
+        recogniser: any HandwritingRecognising,
+        locale: Locale,
+        settleNanoseconds: UInt64
+    ) async {
         guard let drawingData, !drawingData.isEmpty else {
-            self.recognitionTasks[binding] = Task.detached(priority: .utility) {
-                try? await store.saveRecognisedInk(
-                    nil,
-                    pageIndex: binding.pageIndex,
-                    documentId: binding.documentId
-                )
-            }
+            try? await store.saveRecognisedInk(
+                nil,
+                pageIndex: binding.pageIndex,
+                documentId: binding.documentId
+            )
             return
         }
 
-        self.recognitionTasks[binding] = Task.detached(priority: .utility) {
-            try? await Task.sleep(nanoseconds: settle)
-            guard !Task.isCancelled else { return }
-            guard await recogniser.isAvailable(for: locale) else { return }
-            guard let ink = await recogniser.recogniseText(drawingData: drawingData, locale: locale) else { return }
-            guard !Task.isCancelled else { return }
-            do {
-                try await store.saveRecognisedInk(
-                    ink.text,
-                    pageIndex: binding.pageIndex,
-                    documentId: binding.documentId
-                )
-            } catch {
-                // Recognition is an enhancement, never a dependency
-                // (docs/04-flows.md § F3). The ink itself is already on disk.
-                InkLog.recognition.debug("Recognised ink could not be stored; the ink itself is unaffected.")
-            }
+        try? await Task.sleep(nanoseconds: settleNanoseconds)
+        guard !Task.isCancelled else { return }
+        guard await recogniser.isAvailable(for: locale) else { return }
+        guard let ink = await recogniser.recogniseText(drawingData: drawingData, locale: locale) else { return }
+        guard !Task.isCancelled else { return }
+        do {
+            try await store.saveRecognisedInk(
+                ink.text,
+                pageIndex: binding.pageIndex,
+                documentId: binding.documentId
+            )
+        } catch {
+            // Recognition is an enhancement, never a dependency
+            // (docs/04-flows.md § F3). The ink itself is already on disk.
+            InkLog.recognition.debug("Recognised ink could not be stored; the ink itself is unaffected.")
         }
+    }
+
+    /// Drops a finished recognition's handle.
+    ///
+    /// Called by the task itself as it ends. Without it the actor keeps one
+    /// completed `Task` per inked page for as long as the document is open —
+    /// bounded, but pointless, and `close()` was the only thing that ever
+    /// cleared it. The token is what makes this safe: a recognition that has
+    /// already been superseded finds a different token and leaves the newer
+    /// handle alone.
+    private func recognitionFinished(_ binding: InkPageBinding, token: Int) {
+        guard self.recognitions[binding]?.token == token else { return }
+        self.recognitions.removeValue(forKey: binding)
     }
 
     // MARK: - Support
@@ -368,7 +447,9 @@ public actor InkPersistenceCoordinator {
                 pageIndex: binding.pageIndex,
                 documentId: binding.documentId
             )
-            self.cache[binding] = data
+            // Cached even when it is nil: a page that has been read and found
+            // empty must not be read again every time it scrolls into view.
+            self.remember(data, for: binding)
             return data
         } catch {
             InkLog.persistence.error("Could not read a page's ink; it will render empty until the next write.")
@@ -382,6 +463,12 @@ public actor InkPersistenceCoordinator {
     private static func archive(_ drawing: PKDrawing) -> Data? {
         guard !drawing.strokes.isEmpty else { return nil }
         return drawing.dataRepresentation()
+    }
+
+    /// A handwriting recognition in flight, and the token that identifies it.
+    private struct Recognition {
+        let token: Int
+        let task: Task<Void, Never>
     }
 
     /// A page's unwritten state.

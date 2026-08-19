@@ -64,6 +64,13 @@ final class DocumentIngestorTests: XCTestCase {
         for entry in map.entries {
             XCTAssertNotNil(entry.range.substring(of: source))
         }
+
+        // The id is what lets a source map found on its own be matched back to
+        // its document, and it is only knowable here — the renderer has never
+        // heard of meta.json.
+        XCTAssertEqual(map.documentId, "F7A1")
+        let written = try ContractCoding.decoder().decode(SourceMap.self, from: Data(contentsOf: mapURL))
+        XCTAssertEqual(written.documentId, "F7A1")
     }
 
     func testMetaTitleBeatsTheMarkdownHeading() async throws {
@@ -146,6 +153,48 @@ final class DocumentIngestorTests: XCTestCase {
             }
             XCTAssertEqual(folderName, "2026-08-18-empty")
         }
+    }
+
+    /// A folder holding markdown that is not UTF-8 plainly does contain a
+    /// document. Saying it contains none sends the reader looking for a file
+    /// that is sitting right there, which is the one thing the error row exists
+    /// to prevent (docs/04-flows.md § F1).
+    func testMarkdownThatIsNotUtf8IsReportedAsUnreadableRatherThanAbsent() async throws {
+        let folderName = "2026-08-18-latin1"
+        let directory = root.appendingPathComponent("inbox/\(folderName)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+
+        // A heading, then a byte no UTF-8 sequence can begin with.
+        let markdownURL = directory.appendingPathComponent(DocumentFileNames.sourceMarkdown)
+        try (Data("# Caf".utf8) + Data([0xE9]) + Data("\n\nbody\n".utf8)).write(to: markdownURL)
+
+        let item = InboxItem(
+            folderName: folderName,
+            directoryURL: directory,
+            sourceMarkdownURL: markdownURL,
+            modifiedAt: Date(timeIntervalSince1970: 1_760_000_000)
+        )
+
+        do {
+            _ = try await ingestor().ingest(item)
+            XCTFail("expected unreadableDocument")
+        } catch let error as PencilLoopError {
+            guard case let .unreadableDocument(reported, reason) = error else {
+                return XCTFail("expected unreadableDocument, got \(error)")
+            }
+            XCTAssertEqual(reported, folderName)
+            XCTAssertTrue(reason.contains("UTF-8"), reason)
+            XCTAssertFalse(
+                error.message.contains("contains no document"),
+                "The folder does contain a document; the row must not claim otherwise."
+            )
+        }
+
+        // And the bytes are still pinned, so nothing was thrown away.
+        let pinned = container
+            .appendingPathComponent(folderName)
+            .appendingPathComponent(DocumentFileNames.sourceMarkdown)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: pinned.path))
     }
 
     func testMetadataAloneNeverThrows() async throws {

@@ -209,6 +209,61 @@ final class ReviewBundleBuilderTests: XCTestCase {
         XCTAssertTrue(markdown.contains("position approximate"), markdown)
     }
 
+    /// A `source.md` that is *there* and will not read is not the same thing as
+    /// no markdown at all: nothing was checked, so nothing may be presented as
+    /// checked. The captured ranges used to flow into `review.json` looking
+    /// exactly like re-resolved ones, and `review.md` said nothing — an agent
+    /// editing at that offset edits the wrong bytes.
+    func testAnUnreadableSourceMarkdownDropsTheRangesItCouldNotCheck() async throws {
+        // Valid markdown apart from one byte that cannot be UTF-8.
+        let markdownURL = try Self.writeTemporaryBytes(
+            Data("# Auth refactor plan\n\n".utf8) + Data([0xFF, 0xFE]) + Data("\ntext\n".utf8),
+            named: "source.md"
+        )
+        defer { try? FileManager.default.removeItem(at: markdownURL) }
+
+        let payload = try await Self.builder().build(Self.draft(sourceMarkdownURL: markdownURL))
+        let bundleFile = try XCTUnwrap(payload.files.first { $0.relativePath == ReviewBundle.fileName })
+        let bundle = try ContractCoding.decoder().decode(ReviewBundle.self, from: bundleFile.data)
+        let markdown = try Self.text(at: DocumentFileNames.reviewMarkdown, in: payload)
+
+        for comment in bundle.comments {
+            XCTAssertNil(
+                comment.anchor.sourceRange,
+                "An unverified byte range must not be shipped as though it had been checked."
+            )
+        }
+        XCTAssertTrue(markdown.contains("position approximate"), markdown)
+    }
+
+    /// The same rule for markdown that has been deleted from under the review.
+    func testAMissingSourceMarkdownDropsTheRangesItCouldNotCheck() async throws {
+        let missing = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+            .appendingPathComponent("source.md")
+
+        let payload = try await Self.builder().build(Self.draft(sourceMarkdownURL: missing))
+        let bundleFile = try XCTUnwrap(payload.files.first { $0.relativePath == ReviewBundle.fileName })
+        let bundle = try ContractCoding.decoder().decode(ReviewBundle.self, from: bundleFile.data)
+
+        XCTAssertFalse(bundle.comments.isEmpty)
+        XCTAssertNil(bundle.comments.first?.anchor.sourceRange)
+    }
+
+    /// A passage that no longer matches keeps no range either — the rung that
+    /// resolved it is the rect, and the range it used to sit at is a number
+    /// nobody has checked.
+    func testAVanishedPassageKeepsNoSourceRange() async throws {
+        let markdownURL = try Self.writeTemporary("Nothing here resembles the review at all.\n", named: "source.md")
+        defer { try? FileManager.default.removeItem(at: markdownURL) }
+
+        let payload = try await Self.builder().build(Self.draft(sourceMarkdownURL: markdownURL))
+        let bundleFile = try XCTUnwrap(payload.files.first { $0.relativePath == ReviewBundle.fileName })
+        let bundle = try ContractCoding.decoder().decode(ReviewBundle.self, from: bundleFile.data)
+
+        XCTAssertNil(bundle.comments.first?.anchor.sourceRange)
+    }
+
     /// A PDF that was never rendered from markdown has nothing to re-resolve
     /// against, and the captured anchors are used unchanged.
     func testWithoutMarkdownTheCapturedAnchorsAreKept() async throws {
@@ -319,6 +374,12 @@ final class ReviewBundleBuilderTests: XCTestCase {
     }
 
     static func writeTemporary(_ contents: String, named name: String) throws -> URL {
+        try writeTemporaryBytes(Data(contents.utf8), named: name)
+    }
+
+    /// Bytes rather than a `String`, so a test can write a file that is not
+    /// UTF-8 at all — which a `String` cannot express.
+    static func writeTemporaryBytes(_ contents: Data, named name: String) throws -> URL {
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
             .appendingPathComponent(name)
@@ -326,7 +387,7 @@ final class ReviewBundleBuilderTests: XCTestCase {
             at: url.deletingLastPathComponent(),
             withIntermediateDirectories: true
         )
-        try contents.write(to: url, atomically: true, encoding: .utf8)
+        try contents.write(to: url, options: .atomic)
         return url
     }
 }

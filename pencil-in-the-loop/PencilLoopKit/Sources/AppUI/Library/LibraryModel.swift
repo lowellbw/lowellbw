@@ -131,6 +131,11 @@ public final class LibraryModel {
     /// Ingest events reload the list; a folder that went away sets the status
     /// line and nothing else, because losing the folder costs new documents
     /// only (docs/02-spec.md § Cross-cutting).
+    ///
+    /// A folder problem emitted before this started listening still arrives:
+    /// the gateway keeps the last one and replays it on registration, which is
+    /// what puts a stale bookmark's sentence under an empty library at launch
+    /// (`SyncEventRelay`).
     public func observeSync() async {
         for await event in environment.sync.events() {
             switch event {
@@ -140,9 +145,14 @@ public final class LibraryModel {
                 if ingestedCount > 0 {
                     await load()
                 }
+            case .reviewWritten:
+                // A bundle reached `outbox/`, which is when a queued review is
+                // recorded and its document moves to "Read"
+                // (ReviewSheetModel § recordDelivery).
+                await load()
             case let .folderUnavailable(reason):
                 statusMessage = reason
-            case .scanStarted, .reviewWritten:
+            case .scanStarted:
                 continue
             }
         }

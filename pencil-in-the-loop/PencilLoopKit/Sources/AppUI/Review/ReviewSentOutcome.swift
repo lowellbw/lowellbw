@@ -15,7 +15,15 @@ import Foundation
 import Core
 
 /// The result of pressing Send, and everything that has happened to it since.
-struct ReviewSentOutcome: Sendable, Hashable {
+///
+/// **Nonisolated.** AppUI's default isolation is `MainActor` (STYLE.md § 6),
+/// which is right for a view and wrong for a value: this is a `Sendable`
+/// aggregate of Core DTOs, and the Sent screen writes its files to a temporary
+/// directory from a `nonisolated` helper so that the write happens off the main
+/// actor (`ReviewSentView.exportFiles(for:)`). A main-actor-isolated value
+/// cannot be read from there, and the alternative — passing its two fields as
+/// loose arguments — only moves the same question one call further out.
+nonisolated struct ReviewSentOutcome: Sendable, Hashable {
 
     /// How far the bundle has demonstrably got.
     ///

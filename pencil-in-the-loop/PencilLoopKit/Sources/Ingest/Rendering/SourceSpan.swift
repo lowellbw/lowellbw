@@ -66,8 +66,15 @@ final class SourceSpan: NSObject {
     }
 
     /// A span for synthetic text — a bullet, a numbering prefix — that stands in
-    /// for a node without being drawn from it. Tapping the bullet then resolves
-    /// to the list item, which is the useful answer.
+    /// for source it was not drawn from.
+    ///
+    /// Pass the narrowest range that honestly produced the glyphs, which for a
+    /// list bullet is the item's marker syntax and not the item: there is no
+    /// per-code-unit table here, so the whole of `range` is reported for every
+    /// run of the span, and a span covering a whole list item makes the bullet
+    /// the first map entry containing every offset in that item — which is what
+    /// `SourceMap.rect(containing:)` would then answer with. An empty range is
+    /// a legitimate value and contributes nothing to the map.
     init(markerFor range: SourceRange, utf16Start: Int) {
         self.range = range
         self.utf16Start = utf16Start

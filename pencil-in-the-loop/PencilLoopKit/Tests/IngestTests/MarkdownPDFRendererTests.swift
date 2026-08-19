@@ -150,6 +150,31 @@ final class MarkdownPDFRendererTests: XCTestCase {
         XCTAssertTrue(located.rect.intersects(entry.rect))
     }
 
+    /// A list bullet is synthetic text with no per-code-unit table, so whatever
+    /// range it is given is the range it reports for itself — and it is recorded
+    /// before the words beside it. Given the whole item's range it became the
+    /// first entry containing every offset in that item, and
+    /// `SourceMap.rect(containing:)` answers with the first one it finds: every
+    /// "scroll to this range" inside a list landed on a couple of glyphs of
+    /// bullet.
+    func testAnOffsetInsideAListItemDoesNotResolveToItsBullet() throws {
+        let document = try parse(sample)
+        let rendered = try renderer.render(document, geometry: geometry)
+
+        let found = try XCTUnwrap(document.source.range(of: "Cut over"))
+        let words = SourceRange.from(found, in: document.source)
+
+        let located = try XCTUnwrap(rendered.sourceMap.rect(containing: words.start))
+        let text = try XCTUnwrap(rendered.sourceMap.rects(forRange: words).first)
+
+        XCTAssertEqual(located.page, text.page)
+        XCTAssertTrue(
+            located.rect.width >= text.rect.width * 0.5,
+            "an offset inside a list item resolved to a \(located.rect.width)-wide rect "
+                + "against \(text.rect.width) for the words themselves — that is the bullet"
+        )
+    }
+
     func testRectsForRangeGiveOneRectPerPage() throws {
         let document = try parse(sample)
         let rendered = try renderer.render(document, geometry: geometry)

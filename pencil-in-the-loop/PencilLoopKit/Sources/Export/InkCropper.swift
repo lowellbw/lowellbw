@@ -101,17 +101,34 @@ public struct InkCropper: InkCropping {
 
         let pixels = InkCropper.pixelSize(for: crop, scale: scale)
         let renderedScale = InkCropper.renderedScale(for: crop, scale: scale)
-        guard pixels.width >= 1, pixels.height >= 1, renderedScale > 0 else {
+        guard pixels.width >= 1, pixels.height >= 1, renderedScale > 0,
+              crop.width > 0, crop.height > 0 else {
             throw PencilLoopError.bundleBuildFailed(
                 reason: "The crop for page \(pageIndex + 1) is empty."
             )
         }
-        let format = UIGraphicsImageRendererFormat.preferred()
+        // A plain format rather than `.preferred()`: that reads the trait
+        // environment, which is main-actor work in the Swift 6 UIKit overlay,
+        // and this is deliberately the one place in Export that runs off the
+        // main actor. Both properties it would have inherited are overridden on
+        // the next two lines anyway, so there is nothing to inherit.
+        let format = UIGraphicsImageRendererFormat()
         // The size below is already in pixels, so the renderer must not scale it
         // again — otherwise the 2048 cap is silently a 4096 cap on a retina
         // device and the bundle triples in size.
         format.scale = 1
         format.opaque = true
+
+        // The scale the *image* is in, which is not quite `renderedScale`:
+        // `pixelSize(for:scale:)` floors, so the pixel box is up to a pixel
+        // shorter than `crop × renderedScale`. Deriving the transform from
+        // `renderedScale` would map `crop.maxY` onto `pixels.height` and
+        // `crop.minY` a fraction of a pixel below the top edge, while the ink
+        // layer below is stretched to fill the box exactly — one pixel of
+        // daylight between an arrow and the word it points at. Position is the
+        // content here, so both layers are derived from the same box.
+        let scaleX = pixels.width / crop.width
+        let scaleY = pixels.height / crop.height
 
         let renderer = UIGraphicsImageRenderer(size: pixels, format: format)
         let image = renderer.image { context in
@@ -126,7 +143,7 @@ public struct InkCropper: InkCropping {
             // of the page and nothing crashes to tell you.
             cgContext.saveGState()
             cgContext.translateBy(x: 0, y: pixels.height)
-            cgContext.scaleBy(x: renderedScale, y: -renderedScale)
+            cgContext.scaleBy(x: scaleX, y: -scaleY)
             cgContext.translateBy(x: -crop.minX, y: -(pageSize.height - crop.maxY))
             page.draw(with: .mediaBox, to: cgContext)
             cgContext.restoreGState()

@@ -32,6 +32,7 @@ public struct ReaderView: View {
     private let documentId: UUID
     private let placeholderTitle: String
     private let onBack: (() -> Void)?
+    private let onDocumentChanged: () -> Void
     private let onReview: (UUID) -> Void
 
     @Environment(\.scenePhase) private var scenePhase
@@ -48,6 +49,10 @@ public struct ReaderView: View {
     ///   - onBack: a back button, for a container that does not supply one. In
     ///     the app's `NavigationSplitView` the sidebar is the way back, so this
     ///     is normally nil.
+    ///   - onDocumentChanged: called when a comment or the ink has reached the
+    ///     store, so a library beside this reader can re-read the row
+    ///     (`LibraryReloadSignal`). Says nothing about what changed. A container
+    ///     with no library to refresh leaves it out.
     ///   - onReview: the Review button. The review sheet is another unit's
     ///     screen and another unit's decision about how to present it.
     public init(
@@ -55,12 +60,14 @@ public struct ReaderView: View {
         documentId: UUID,
         title: String = "",
         onBack: (() -> Void)? = nil,
+        onDocumentChanged: @escaping () -> Void = {},
         onReview: @escaping (UUID) -> Void = { _ in }
     ) {
         self.environment = environment
         self.documentId = documentId
         self.placeholderTitle = title
         self.onBack = onBack
+        self.onDocumentChanged = onDocumentChanged
         self.onReview = onReview
     }
 
@@ -95,6 +102,9 @@ public struct ReaderView: View {
         .toolbarVisibility(self.model.isChromeVisible ? .visible : .hidden, for: .navigationBar)
         .persistentSystemOverlays(self.model.isChromeVisible ? .automatic : .hidden)
         .task(id: self.documentId) {
+            // Set before the open: the comment capture is built inside it and
+            // takes its own hook from this one.
+            self.model.onDocumentChanged = self.onDocumentChanged
             await self.model.open(documentId: self.documentId, environment: self.environment)
 
             // Runs until the view goes away, then falls through to close, which

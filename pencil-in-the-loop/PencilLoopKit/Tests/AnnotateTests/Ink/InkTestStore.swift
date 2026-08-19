@@ -22,6 +22,7 @@ actor InkTestStore: DocumentStoring {
     private(set) var singlePageReadCount = 0
     private var storedPages: [PageSnapshot]
     private var failWrites: Bool
+    private var writeDuration: TimeInterval = 0
 
     init(pages: [PageSnapshot] = [], failWrites: Bool = false) {
         self.storedPages = pages
@@ -30,6 +31,18 @@ actor InkTestStore: DocumentStoring {
 
     func setFailWrites(_ value: Bool) {
         self.failWrites = value
+    }
+
+    /// Makes every ink write take `seconds`, so a test can look at the
+    /// coordinator while one is in flight.
+    ///
+    /// It blocks rather than suspending, and it has to: `DocumentStoring`'s
+    /// members are synchronous, so a conforming actor cannot await inside one.
+    /// The window this opens is real either way — the coordinator is a
+    /// different actor and is suspended on the hop for the whole of it, which
+    /// is exactly the state finding 1 is about.
+    func setWriteDuration(_ seconds: TimeInterval) {
+        self.writeDuration = seconds
     }
 
     // MARK: - Library
@@ -75,6 +88,9 @@ actor InkTestStore: DocumentStoring {
     // MARK: - Ink
 
     func saveDrawing(_ drawingData: Data?, pageIndex: Int, documentId: UUID) throws {
+        if self.writeDuration > 0 {
+            Thread.sleep(forTimeInterval: self.writeDuration)
+        }
         if self.failWrites {
             throw PencilLoopError.storeWriteFailed(reason: "test")
         }

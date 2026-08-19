@@ -161,11 +161,25 @@ struct MarkdownLayoutPlanner {
             remaining.removeFirst()
         }
 
+        // The bullet stands for the marker syntax that produced it — `- `, `1. `
+        // — and for nothing wider. It used to carry the whole list item's range,
+        // and because a marker span has no per-code-unit table it reported that
+        // whole range for the two glyphs of a bullet. `SourceMap.rect(containing:)`
+        // answers with the *first* entry containing an offset, and the bullet is
+        // recorded first, so every reverse lookup inside a list item — "scroll to
+        // this range", a highlight — landed on a few points of bullet instead of
+        // on the words at that offset.
+        //
+        // Empty when the item has no lead paragraph to bound it, which the
+        // renderer drops rather than recording a range it cannot justify.
+        let markerEnd = min(max(leadRange.start, item.sourceRange.start), item.sourceRange.end)
+        let markerRange = SourceRange(start: item.sourceRange.start, end: markerEnd)
+
         let text = attributed(
             leadInlines,
             role: quoted ? .quote : .body,
             marker: marker,
-            markerRange: item.sourceRange,
+            markerRange: markerRange,
             hangingIndent: markerWidth
         )
         if text.length > 0 {

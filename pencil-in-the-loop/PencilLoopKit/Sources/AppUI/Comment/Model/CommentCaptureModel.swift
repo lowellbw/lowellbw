@@ -66,6 +66,16 @@ public final class CommentCaptureModel {
     /// reaching through this class.
     public let gestures: CommentGestureController?
 
+    /// Called after the store's copy of this document's comments has changed —
+    /// one saved, one deleted, one restored.
+    ///
+    /// The library row's section and its comment count both come from the
+    /// store, and the first comment on a document is what moves it to
+    /// "Reviewing" (docs/04-flows.md § F2). The sidebar sits beside the reader
+    /// and has nothing else to tell it (`LibraryReloadSignal`). Nil everywhere
+    /// but the reader.
+    public var onCommentsChanged: (() -> Void)?
+
     // MARK: - Dependencies
 
     private let environment: any AppEnvironment
@@ -328,6 +338,7 @@ public final class CommentCaptureModel {
             guard let self else { return }
             do {
                 try await self.environment.store.deleteComment(id: comment.id)
+                self.onCommentsChanged?()
             } catch {
                 // The delete did not happen, so neither should the disappearance.
                 self.comments = Self.inDocumentOrder(self.comments + [comment])
@@ -349,6 +360,7 @@ public final class CommentCaptureModel {
             guard let restored = try? await self.environment.store.undoLastCommentDeletion() else { return }
             self.comments = Self.inDocumentOrder(self.comments + [restored])
             self.selectedComments = Self.inDocumentOrder(self.selectedComments + [restored])
+            self.onCommentsChanged?()
         }
     }
 
@@ -550,6 +562,7 @@ public final class CommentCaptureModel {
                 self.comments = Self.inDocumentOrder(self.comments + [saved])
                 CommentHaptics.commentSaved()
                 self.close()
+                self.onCommentsChanged?()
             } catch {
                 // The words stay on screen. Losing a spoken sentence to a
                 // storage error would be the worst failure this feature has.

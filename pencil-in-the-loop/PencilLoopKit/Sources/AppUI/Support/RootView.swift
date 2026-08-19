@@ -27,6 +27,12 @@ public struct RootView: View {
 
     @State private var model: RootModel
     @State private var reviewing: DocumentDetail?
+
+    /// Held here rather than in the library so that the reader and the review
+    /// sheet — neither of which knows the sidebar exists — can say the rows have
+    /// moved (`LibraryReloadSignal`).
+    @State private var libraryReload = LibraryReloadSignal()
+
     @Environment(\.scenePhase) private var scenePhase
 
     /// - Parameter model: the shell's state. Made by `PencilLoopApp` so it
@@ -83,17 +89,29 @@ public struct RootView: View {
 
     /// The split view, the reader in its detail column, and the review sheet.
     private func library(_ environment: any AppEnvironment) -> some View {
-        LibraryView(environment: environment, selecting: model.pendingSelection) { summary in
+        LibraryView(
+            environment: environment,
+            selecting: model.pendingSelection,
+            reload: libraryReload
+        ) { summary in
             ReaderView(
                 environment: environment,
                 documentId: summary.id,
                 title: summary.title,
+                // The store promotes a document to "Reviewing" inside the write
+                // that annotates it, and says so to nobody. The sidebar is on
+                // screen beside the reader, so it has to be told to look again
+                // (docs/04-flows.md § F2, `LibraryReloadSignal`).
+                onDocumentChanged: { self.libraryReload.note() },
                 onReview: { documentId in
                     self.presentReview(for: documentId, environment: environment)
                 }
             )
         }
-        .sheet(item: $reviewing) { detail in
+        // A sent review moves the document to "Read", or a queued one holds it
+        // in "Reviewing"; either way the row the sheet was opened from is stale
+        // by the time it closes (ReviewSheetModel § recordDelivery).
+        .sheet(item: $reviewing, onDismiss: { self.libraryReload.note() }) { detail in
             ReviewSheet(environment: environment, document: detail) { newDocumentId in
                 // An agent's reply, opened as a document. It is in the library
                 // already — Sync ingested it — so selecting it is all that is

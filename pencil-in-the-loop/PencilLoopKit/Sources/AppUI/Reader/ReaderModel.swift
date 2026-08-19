@@ -95,6 +95,15 @@ public final class ReaderModel {
     /// The document currently open, if any.
     public private(set) var documentId: UUID?
 
+    /// Called when something the library shows about this document has changed:
+    /// a comment saved, deleted or restored, and the ink flushed when the reader
+    /// closes or the scene goes away.
+    ///
+    /// The reader does not write `.reviewing` itself and must not — see
+    /// § Annotation below — but the sidebar sits beside it in the split view and
+    /// nothing else tells it to look again (`LibraryReloadSignal`).
+    public var onDocumentChanged: (() -> Void)?
+
     private var environment: (any AppEnvironment)?
     private var toolPicker: InkToolPickerController?
     private var sessionStartedAt: Date?
@@ -178,11 +187,15 @@ public final class ReaderModel {
             return
         }
 
-        self.capture = CommentCaptureModel(
+        let capture = CommentCaptureModel(
             environment: newEnvironment,
             detail: detail,
             resolver: self.pageResolver
         )
+        capture.onCommentsChanged = { [weak self] in
+            self?.onDocumentChanged?()
+        }
+        self.capture = capture
         self.toolPicker = picker
         self.canvasPool = pool
         self.sessionStartedAt = Date()
@@ -211,6 +224,10 @@ public final class ReaderModel {
         await self.writeLastReadPage()
         if let pool {
             await pool.close()
+            // The debounced ink has only now reached the store, and the first
+            // stroke on a document is what `markAnnotated` promoted it on.
+            // Nothing else tells the sidebar (§ Annotation).
+            self.onDocumentChanged?()
         }
 
         // A newer document has taken the model over; everything below would
@@ -370,6 +387,7 @@ public final class ReaderModel {
         self.sessionStartedAt = nil
         if let pool = self.canvasPool {
             await pool.flush()
+            self.onDocumentChanged?()
         }
     }
 
@@ -404,9 +422,13 @@ public final class ReaderModel {
     // wherever they happen to agree today. The comment unit had a third and
     // removed it for the same reason.
     //
-    // Nothing is lost by the reader not knowing: the library re-reads its rows
-    // from the store, and the review sheet is handed a fresh `DocumentDetail`
-    // when it opens.
+    // Nothing is lost by the reader not knowing — but something had to make the
+    // library look again, and nothing did: `markAnnotated` emits no `SyncEvent`
+    // and `LibraryModel.load()` had no trigger for it, so in the split view a
+    // document annotated beside the sidebar stayed under "Unread" for the rest
+    // of the session. `onDocumentChanged` is that trigger and only that: it
+    // says "the store has moved", never what it moved to. The review sheet is
+    // handed a fresh `DocumentDetail` when it opens and needs no telling.
     // ─────────────────────────────────────────────────────────────────────────
 
     // MARK: - Support

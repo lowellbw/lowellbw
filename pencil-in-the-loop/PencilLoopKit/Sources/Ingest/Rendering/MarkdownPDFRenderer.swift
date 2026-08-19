@@ -148,6 +148,39 @@ public struct MarkdownPDFRenderer: MarkdownPDFRendering {
             let width = columnWidth - indent
             guard width > 0 else { return }
 
+            /// Begins a page for the fragment at `start`, unless that fragment
+            /// would lay out nothing even with a whole page to itself.
+            ///
+            /// A page begun for text that will not fit anywhere is a page the
+            /// reader still scrolls through and `run.pageCount` still counts,
+            /// and once `beginPage()` has been called there is no taking it
+            /// back — so the question is asked first, in a column the size of
+            /// the one the page break would produce. Measuring only; the same
+            /// layout is redone for real on the other side of the break.
+            ///
+            /// - Returns: false when the item has to be dropped, which the
+            ///   caller answers by returning without having begun a page.
+            func beginPageIfAnythingWouldFit(from start: Int) -> Bool {
+                let column = CGRect(
+                    x: columnLeft + indent,
+                    y: top,
+                    width: width,
+                    height: bottom - top
+                )
+                guard column.height > 0 else { return false }
+                let probe = TextFrameRenderer.layout(
+                    text,
+                    from: start,
+                    in: column,
+                    pageIndex: pageIndex,
+                    pageSize: pageSize,
+                    into: nil
+                )
+                guard probe.visibleLength > 0 else { return false }
+                beginPage()
+                return true
+            }
+
             var start = 0
             var isFirstFragment = true
 
@@ -158,9 +191,13 @@ public struct MarkdownPDFRenderer: MarkdownPDFRendering {
                 if isFirstFragment, item.keepWithNext, !atPageTop() {
                     let wanted = TextFrameRenderer.suggestedHeight(text, from: start, width: width)
                         + typography.bodyLineHeight * 1.6
-                    if room() < wanted { beginPage() }
+                    if room() < wanted {
+                        guard beginPageIfAnythingWouldFit(from: start) else { return }
+                    }
                 }
-                if room() < minimumFragment, !atPageTop() { beginPage() }
+                if room() < minimumFragment, !atPageTop() {
+                    guard beginPageIfAnythingWouldFit(from: start) else { return }
+                }
 
                 let column = CGRect(x: columnLeft + indent, y: cursor, width: width, height: room())
                 guard column.height > 0 else { return }
@@ -196,7 +233,7 @@ public struct MarkdownPDFRenderer: MarkdownPDFRendering {
                     // Nothing fitted. On a fresh page that means it never will,
                     // and dropping one item beats looping forever.
                     if atPageTop() { return }
-                    beginPage()
+                    guard beginPageIfAnythingWouldFit(from: start) else { return }
                     continue
                 }
 
@@ -210,7 +247,7 @@ public struct MarkdownPDFRenderer: MarkdownPDFRendering {
                         run.overflowed = true
                         return
                     }
-                    beginPage()
+                    guard beginPageIfAnythingWouldFit(from: start) else { return }
                 }
             }
             cursor += item.spacingAfter

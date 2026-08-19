@@ -37,11 +37,20 @@ import Core
 /// resolved keeps its stream and starts receiving events the moment one is
 /// attached. That is the whole reason the listener list lives here rather than
 /// being taken from the coordinator on demand.
+///
+/// **And a folder problem survives having no listeners at all.** The one that
+/// matters most is emitted before the library exists — see `SyncEventRelay`,
+/// which holds the listeners, remembers the last problem, and replays it to
+/// whoever starts listening next.
 public actor SyncGateway: SyncCoordinating {
 
     private var coordinator: (any SyncCoordinating)?
     private var forwarding: Task<Void, Never>?
-    private var listeners: [UUID: AsyncStream<SyncEvent>.Continuation] = [:]
+
+    /// The listeners, outside the actor so `events()` can register one before
+    /// it returns. A `let` of a `Sendable` type, so the nonisolated members
+    /// below can reach it (`SyncEventRelay`).
+    private nonisolated let relay = SyncEventRelay()
 
     /// Whether `start()` has been called. A coordinator attached afterwards is
     /// started immediately, so the order of "app foregrounded" and "folder
@@ -61,10 +70,13 @@ public actor SyncGateway: SyncCoordinating {
     public func attach(_ newCoordinator: any SyncCoordinating) async {
         await detach()
         coordinator = newCoordinator
+        // A folder has resolved, so whatever the last problem was, it is over
+        // and a listener arriving now must not be told otherwise.
+        relay.clearFolderProblem()
         let stream = newCoordinator.events()
-        forwarding = Task { [weak self] in
+        forwarding = Task { [relay] in
             for await event in stream {
-                await self?.emit(event)
+                relay.emit(event)
             }
         }
         if isStarted {
@@ -86,6 +98,12 @@ public actor SyncGateway: SyncCoordinating {
     /// Reports a folder-level problem to everyone listening, when there is no
     /// coordinator to report it for us — a bookmark that would not resolve at
     /// launch, most often.
+    ///
+    /// Launch is exactly the moment when "everyone listening" is nobody:
+    /// `RootModel.start()` resolves the bookmark before SwiftUI has built the
+    /// library. The reason is therefore kept and replayed to the first listener
+    /// that appears, which is what puts the sentence in the status line instead
+    /// of leaving an unexplained empty library (`SyncEventRelay`).
     public func reportFolderUnavailable(_ reason: String) {
         emit(.folderUnavailable(reason: reason))
     }
@@ -117,14 +135,19 @@ public actor SyncGateway: SyncCoordinating {
     }
 
     /// One stream per consumer, live across an attach.
+    ///
+    /// The listener is registered before this returns, not in a `Task` that
+    /// gets its turn later: a consumer that has called this and begun iterating
+    /// must not be able to miss an event emitted in between. Anything already
+    /// emitted that a late listener still needs — a folder that is not there —
+    /// is replayed into the stream on registration (`SyncEventRelay`).
     public nonisolated func events() -> AsyncStream<SyncEvent> {
         let identifier = UUID()
         let (stream, continuation) = AsyncStream<SyncEvent>.makeStream()
         continuation.onTermination = { [weak self] _ in
-            guard let self else { return }
-            Task { await self.removeListener(identifier) }
+            self?.relay.remove(identifier)
         }
-        Task { await self.addListener(identifier, continuation) }
+        relay.add(identifier, continuation)
         return stream
     }
 
@@ -152,17 +175,7 @@ public actor SyncGateway: SyncCoordinating {
         reason: "No sync folder is set up on this iPad. Choose one in Settings; everything already in the library stays readable."
     )
 
-    private func addListener(_ identifier: UUID, _ continuation: AsyncStream<SyncEvent>.Continuation) {
-        listeners[identifier] = continuation
-    }
-
-    private func removeListener(_ identifier: UUID) {
-        listeners[identifier] = nil
-    }
-
-    private func emit(_ event: SyncEvent) {
-        for continuation in listeners.values {
-            continuation.yield(event)
-        }
+    private nonisolated func emit(_ event: SyncEvent) {
+        relay.emit(event)
     }
 }

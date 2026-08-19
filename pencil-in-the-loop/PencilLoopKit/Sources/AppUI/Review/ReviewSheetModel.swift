@@ -91,6 +91,14 @@ final class ReviewSheetModel {
     /// A `reviewWritten` event that arrived before the outcome existed.
     private var confirmedWriteAt: Date?
 
+    /// True once this send has been recorded against the document.
+    ///
+    /// A queued bundle is recorded when it reaches the folder rather than when
+    /// it is queued (`recordDelivery(of:at:environment:)`), so the two routes to
+    /// that write — the send itself and a later `.reviewWritten` — need to know
+    /// the other has not already taken it.
+    private var hasRecordedSend = false
+
     /// A `folderUnavailable` event that arrived before the outcome existed.
     private var folderUnavailableReason: String?
 
@@ -170,11 +178,26 @@ final class ReviewSheetModel {
     /// ignored.
     func apply(_ event: SyncEvent) {
         switch event {
-        case let .reviewWritten(documentId, _):
+        case let .reviewWritten(documentId, directoryURL):
             guard documentId == document.id else { return }
             let now = Date()
             confirmedWriteAt = now
             outcome?.delivery = .written(at: now)
+
+            // A queue that has just been flushed. Only now is there a bundle in
+            // `outbox/` for an agent to answer, so only now is there a review to
+            // record. `.sending` is excluded because `send(_:)` is mid-flight
+            // and records that case itself, with the date the user pressed Send.
+            if let environment, phase != .sending {
+                let directoryName = outcome?.directoryName ?? directoryURL.lastPathComponent
+                Task { [weak self] in
+                    await self?.recordSent(
+                        at: now,
+                        directoryName: directoryName,
+                        environment: environment
+                    )
+                }
+            }
 
         case let .folderUnavailable(reason):
             folderUnavailableReason = reason
@@ -296,14 +319,25 @@ final class ReviewSheetModel {
         }
     }
 
-    /// Writes every edit through before anything reads the store's copy.
+    /// Writes the outstanding edits through before anything reads the store's
+    /// copy.
+    ///
+    /// **Only the comments this sheet has actually edited.** It used to write
+    /// all of them, which cost n store round trips inside the Send path's 2s
+    /// budget and, worse, overwrote any comment edited elsewhere between
+    /// `load(environment:)` and Send — a marker popover in the reader is the
+    /// obvious one — with this sheet's older copy. A debounce task exists for
+    /// exactly the comments whose text has been typed into here, so its keys are
+    /// the set to write.
     func flushPendingEdits(environment: any AppEnvironment) async {
+        let edited = pendingSaves.keys.sorted { $0.uuidString < $1.uuidString }
         for task in pendingSaves.values {
             task.cancel()
         }
         pendingSaves.removeAll()
-        for comment in comments {
-            try? await environment.store.updateComment(id: comment.id, text: comment.text)
+        for id in edited {
+            guard let text = comments.first(where: { $0.id == id })?.text else { continue }
+            try? await environment.store.updateComment(id: id, text: text)
         }
     }
 
@@ -406,12 +440,7 @@ final class ReviewSheetModel {
                 delivery: delivery(for: written)
             )
             phase = .sent
-            try? await environment.store.recordReviewSent(
-                documentId: document.id,
-                at: sentAt,
-                directoryName: written.directoryName
-            )
-            try? await environment.store.setState(.read, documentId: document.id)
+            await recordDelivery(of: written, at: sentAt, environment: environment)
         } catch let error as PencilLoopError {
             failureMessage = error.message
             phase = .composing
@@ -419,6 +448,60 @@ final class ReviewSheetModel {
             failureMessage = "The review could not be sent. Nothing was lost — try again."
             phase = .composing
         }
+    }
+
+    /// What a send persists, and what it deliberately does not.
+    ///
+    /// A bundle that reached `outbox/` is a review that has been sent: it is
+    /// recorded with the directory an agent's reply will come back in, and the
+    /// document leaves "Reviewing" for "Read" (docs/04-flows.md § F5).
+    ///
+    /// **A queued bundle is neither of those.** `WrittenReview.isQueued` means
+    /// the folder was unreachable and the bytes went to the local queue in the
+    /// app container, not to `outbox/` (docs/04-flows.md § F7). Recording it as
+    /// sent would put a delivery in the store that has not happened: reopening
+    /// the sheet would say "Sent <date> — nothing back yet", and "Open reply as
+    /// document" would ask `ingestReply(fromReviewDirectory:)` for a directory
+    /// that is not in the outbox to be found. What is true of a queued review is
+    /// that the document has work outstanding on it, so it is put in
+    /// `.reviewing` — sent-pending, which is neither sent nor un-reviewed — and
+    /// the Sent screen says "Will send when online" over the same fact. The
+    /// review is recorded when `SyncEvent.reviewWritten` reports the queue
+    /// flushed, which is the first moment there is a delivery to record.
+    ///
+    /// A queued bundle whose flush happens after this sheet has closed is not
+    /// recorded by anyone — see this unit's report; the fix belongs in
+    /// `SyncCoordinator.flushQueue`, which is the only thing that always knows.
+    private func recordDelivery(
+        of written: WrittenReview,
+        at sentAt: Date,
+        environment: any AppEnvironment
+    ) async {
+        guard written.isQueued == false else {
+            try? await environment.store.setState(.reviewing, documentId: document.id)
+            return
+        }
+        await recordSent(
+            at: sentAt,
+            directoryName: written.directoryName,
+            environment: environment
+        )
+    }
+
+    /// Records one delivery, once.
+    private func recordSent(
+        at date: Date,
+        directoryName: String,
+        environment: any AppEnvironment
+    ) async {
+        guard hasRecordedSend == false else { return }
+        hasRecordedSend = true
+        try? await environment.store.recordReviewSent(
+            documentId: document.id,
+            at: date,
+            directoryName: directoryName
+        )
+        try? await environment.store.setState(.read, documentId: document.id)
     }
 
     /// What actually happened to the bundle.

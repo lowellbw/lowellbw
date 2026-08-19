@@ -115,6 +115,88 @@ final class InkPersistenceCoordinatorTests: XCTestCase {
         XCTAssertTrue(writes.isEmpty, "Reading must not have provoked a write.")
     }
 
+    /// The window that used to lose ink: `commit` takes the page out of
+    /// `pending` and only puts the bytes in the cache once the store has
+    /// returned. A canvas recycled back onto the page during that write finds
+    /// nothing pending, reads the cache, and — before the fix — was handed the
+    /// ink as it was when the document opened. It then painted that, and the
+    /// next stroke wrote it back over the top of the strokes in flight.
+    ///
+    /// The recycle is what triggers the flush, so this is not a rare
+    /// interleaving; it is the ordinary one.
+    func testAReadDuringAWriteSeesTheInkBeingWrittenAndNotTheInkBeforeIt() async throws {
+        let openedWith = InkTestDrawings.drawing(strokeCount: 1).dataRepresentation()
+        let store = InkTestStore()
+        let coordinator = InkPersistenceCoordinator(store: store, policy: .standard)
+
+        // The document opens with one stroke on page 3, seeded from its
+        // snapshots exactly as the reader does it.
+        await coordinator.preload(
+            [PageSnapshot(pageIndex: 3, drawingData: openedWith, hasInk: true)],
+            documentId: documentId
+        )
+
+        // Two more strokes, then the page scrolls away and is flushed.
+        coordinator.record(InkChange(binding: binding(3), drawing: InkTestDrawings.drawing(strokeCount: 3)))
+        await store.setWriteDuration(0.4)
+        let flush = Task { await coordinator.flush(binding(3)) }
+
+        // Long enough for the flush to have reached the store and be waiting
+        // there; short enough that it is still waiting.
+        try await Task.sleep(nanoseconds: 80_000_000)
+
+        // The page scrolls back: the pool's hint was consumed on first
+        // appearance, so the canvas asks for the bytes.
+        let served = try XCTUnwrap(await coordinator.drawingData(for: binding(3)))
+        await flush.value
+
+        XCTAssertNotEqual(
+            served,
+            openedWith,
+            "A page read while its own write is in flight was handed the ink from before the strokes that provoked the write."
+        )
+        let strokeCount = try PKDrawing(data: served).strokes.count
+        XCTAssertEqual(strokeCount, 3, "The latest ink for the page is the ink being written, not the ink it replaced.")
+    }
+
+    /// The cache has to be able to say "this page is empty" — most pages are —
+    /// or `preload` buys nothing for them and every clean page scrolled into
+    /// view costs an actor hop and a store read.
+    func testAPreloadedPageWithNoInkIsServedWithoutTouchingTheStore() async {
+        let store = InkTestStore()
+        let coordinator = InkPersistenceCoordinator(store: store, policy: .standard)
+        await coordinator.preload(
+            (0..<4).map { PageSnapshot(pageIndex: $0) },
+            documentId: documentId
+        )
+
+        for page in 0..<4 {
+            let data = await coordinator.drawingData(for: binding(page))
+            XCTAssertNil(data)
+        }
+
+        let singleReads = await store.singlePageReadCount
+        XCTAssertEqual(singleReads, 0, "A page preloaded without ink must be answered from the cache, not read back.")
+        let wholeDocumentReads = await store.pageReadCount
+        XCTAssertEqual(wholeDocumentReads, 0)
+    }
+
+    /// The same property one step further on: a page whose ink was erased is
+    /// known to be empty, and reading it back must not go to the store either.
+    func testAnErasedPageIsRememberedAsEmpty() async {
+        let store = InkTestStore()
+        let coordinator = InkPersistenceCoordinator(store: store, policy: .standard)
+        await coordinator.preload([PageSnapshot(pageIndex: 0)], documentId: documentId)
+
+        coordinator.record(InkChange(binding: binding(0), drawing: InkTestDrawings.empty))
+        await coordinator.flushAll()
+
+        let data = await coordinator.drawingData(for: binding(0))
+        XCTAssertNil(data)
+        let singleReads = await store.singlePageReadCount
+        XCTAssertEqual(singleReads, 0)
+    }
+
     func testPreloadedInkIsServedWithoutTouchingTheStore() async {
         let bytes = InkTestDrawings.drawing(strokeCount: 2).dataRepresentation()
         let store = InkTestStore()

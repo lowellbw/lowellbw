@@ -46,6 +46,30 @@ enum AppUITestSamples {
         )
     }
 
+    /// The document the review tests send.
+    ///
+    /// It has a `pdfURL` because `ReviewSheetModel.canSend` requires one — a
+    /// document with no local file has nothing to build a bundle from — and the
+    /// file itself is never opened: `PreviewReviewBundleBuilder` returns an
+    /// empty payload without reading anything.
+    static func detail(comments: [CommentSnapshot] = []) -> DocumentDetail {
+        DocumentDetail(
+            id: id(99),
+            title: "Auth refactor plan",
+            folderName: "2026-08-18-auth-refactor-plan",
+            externalId: "doc_9f2c41",
+            pdfURL: URL(fileURLWithPath: "/tmp/container/2026-08-18-auth-refactor-plan/document.pdf"),
+            pageCount: 4,
+            state: .reviewing,
+            origin: Origin(kind: .cowork),
+            addedAt: Date(timeIntervalSince1970: 1_787_000_000),
+            lastReadPage: 0,
+            extractedText: "The auth refactor plan.",
+            pages: [],
+            comments: comments
+        )
+    }
+
     /// A stable, readable id per ordinal: `C0FFEE00-…-0000000000NN`.
     static func id(_ ordinal: Int) -> UUID {
         let suffix = String(format: "%012d", ordinal)

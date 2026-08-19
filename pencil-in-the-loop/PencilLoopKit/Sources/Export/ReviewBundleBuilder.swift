@@ -189,16 +189,37 @@ public struct ReviewBundleBuilder: ReviewBundleBuilding {
     /// the comment was made, and a `sourceRange` that was right last week is
     /// worse than no `sourceRange` at all.
     ///
-    /// - Returns: empty maps when there is no markdown to resolve against — a
-    ///   PDF that was never rendered from markdown has nothing to check, and the
-    ///   captured anchors are used unchanged.
+    /// **A range that could not be checked is dropped, not kept.** There is no
+    /// markdown to resolve against for a PDF that was never rendered from any,
+    /// and those anchors are used unchanged — that is the one case where a
+    /// stored `sourceRange` was never a claim about a file we can read. But
+    /// markdown that is *there* and will not read — deleted underneath us,
+    /// permission refused, saved in something that is not UTF-8 — is a failure
+    /// to verify, and it used to be indistinguishable from the first case: the
+    /// captured ranges went into `review.json` looking exactly like checked
+    /// ones, and `review.md` said nothing. An agent editing at that offset edits
+    /// the wrong bytes.
+    ///
+    /// - Returns: empty maps when there is no markdown at all. When there is
+    ///   markdown that could not be read, every comment comes back with its
+    ///   `sourceRange` removed and a `.rectFallback` resolution, so the prose
+    ///   describes the position as approximate — which is what it is.
     func resolvedAnchors(
         for draft: ReviewDraft
     ) -> (anchors: [UUID: Anchor], resolutions: [UUID: AnchorResolution]) {
         guard draft.include.comments, !draft.comments.isEmpty else { return ([:], [:]) }
-        guard let url = draft.sourceMarkdownURL,
-              let text = try? String(contentsOf: url, encoding: .utf8),
-              !text.isEmpty else { return ([:], [:]) }
+        guard let url = draft.sourceMarkdownURL else { return ([:], [:]) }
+
+        let text: String
+        do {
+            text = try String(contentsOf: url, encoding: .utf8)
+        } catch {
+            logger.error(
+                "source.md could not be read, so no anchor could be re-checked; the review was sent with positions marked approximate."
+            )
+            return unverifiedAnchors(for: draft)
+        }
+        guard !text.isEmpty else { return unverifiedAnchors(for: draft) }
 
         var anchors: [UUID: Anchor] = [:]
         var resolutions: [UUID: AnchorResolution] = [:]
@@ -208,10 +229,31 @@ public struct ReviewBundleBuilder: ReviewBundleBuilding {
             resolutions[comment.id] = resolution
 
             var anchor = comment.anchor
-            if let range = resolution.range {
-                anchor.sourceRange = range
-            }
+            // Nil for a rect fallback, and deliberately so: the passage no
+            // longer matches, so the byte range it used to sit at is a number
+            // nobody has checked. A `sourceRange` that was right last week is
+            // worse than no `sourceRange` at all.
+            anchor.sourceRange = resolution.range
             anchors[comment.id] = anchor
+        }
+        return (anchors, resolutions)
+    }
+
+    /// Every comment, stripped of the range that could not be verified and
+    /// marked as positioned by page and rect alone.
+    private func unverifiedAnchors(
+        for draft: ReviewDraft
+    ) -> (anchors: [UUID: Anchor], resolutions: [UUID: AnchorResolution]) {
+        var anchors: [UUID: Anchor] = [:]
+        var resolutions: [UUID: AnchorResolution] = [:]
+        for comment in draft.comments {
+            var anchor = comment.anchor
+            anchor.sourceRange = nil
+            anchors[comment.id] = anchor
+            resolutions[comment.id] = .rectFallback(
+                pageIndex: comment.anchor.pageIndex,
+                rect: comment.anchor.normalisedRect
+            )
         }
         return (anchors, resolutions)
     }

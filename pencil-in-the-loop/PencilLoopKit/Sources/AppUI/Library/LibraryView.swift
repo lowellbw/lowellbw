@@ -25,6 +25,7 @@ public struct LibraryView<Detail: View>: View {
 
     private let environment: any AppEnvironment
     private let selecting: UUID?
+    private let reload: LibraryReloadSignal
     private let detail: (DocumentSummary) -> Detail
 
     @State private var model: LibraryModel
@@ -38,14 +39,20 @@ public struct LibraryView<Detail: View>: View {
     ///   - selecting: a document to select when it changes — an agent's reply
     ///     that has just been opened as a document (docs/04-flows.md § F6). The
     ///     selection is otherwise the sidebar's own; this only nudges it.
+    ///   - reload: bumped by whatever has changed a row while the sidebar was
+    ///     on screen beside it — an annotation promoting a document to
+    ///     "Reviewing", a review being sent (`LibraryReloadSignal`). A caller
+    ///     with nothing to report can leave it out.
     ///   - detail: the reader, built for whichever row is selected.
     public init(
         environment: any AppEnvironment,
         selecting: UUID? = nil,
+        reload: LibraryReloadSignal = LibraryReloadSignal(),
         @ViewBuilder detail: @escaping (DocumentSummary) -> Detail
     ) {
         self.environment = environment
         self.selecting = selecting
+        self.reload = reload
         self.detail = detail
         _model = State(initialValue: LibraryModel(environment: environment))
     }
@@ -114,6 +121,13 @@ public struct LibraryView<Detail: View>: View {
         }
         .task {
             await model.observeSync()
+        }
+        .onChange(of: reload.revision) { _, _ in
+            // Something beside the sidebar changed a row: a document annotated
+            // in the reader, or a review sent. `.onChange` rather than
+            // `.task(id:)` so that appearing does not run a second load on top
+            // of the one `reloadKey` already runs (`LibraryReloadSignal`).
+            Task { await self.model.load() }
         }
         .onChange(of: selecting) { _, requested in
             guard let requested else { return }

@@ -286,6 +286,15 @@ public struct SwiftMarkdownAdapter: MarkdownParsing {
 
     /// A soft or hard break: one byte of line ending on disk, a space or a
     /// newline on the page.
+    ///
+    /// When the line ending cannot be found the break gets an **empty range at
+    /// the end of the run before it**, not `.zero`. Both contribute nothing to
+    /// the source map, which is what `lineBreakRange(from:)` documents as the
+    /// answer — but `.zero` also moved the cursor back to the start of the file,
+    /// and the next run searches near where the previous one ended. A run
+    /// anchored at offset 0 finds the first identical string near the top of the
+    /// document and reports it confidently, which is worse than the coarse
+    /// answer this module's rule prefers.
     private func addBreak(
         _ text: String,
         attributes: InlineAttributes,
@@ -294,7 +303,8 @@ public struct SwiftMarkdownAdapter: MarkdownParsing {
         into runs: inout [InlineRun]
     ) {
         let previousEnd = runs.last?.sourceRange.end ?? 0
-        let range = index.lineBreakRange(from: previousEnd) ?? .zero
+        let range = index.lineBreakRange(from: previousEnd)
+            ?? Core.SourceRange(start: previousEnd, end: previousEnd)
         runs.append(InlineRun(
             text: text,
             attributes: attributes,

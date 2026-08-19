@@ -75,10 +75,11 @@ public struct DocumentIngestor: DocumentIngesting {
     ///   the app container.
     /// - Throws: `PencilLoopError.nothingToIngest` for a directory with neither
     ///   a PDF nor a markdown file, `.materialisationFailed` when the bytes
-    ///   cannot be copied in, `.unreadableDocument` when PDFKit refuses the
-    ///   file, and `.renderFailed` when markdown will not lay out. The caller
-    ///   records the failure and shows an error row; it must never delete the
-    ///   folder (Protocols.swift § DocumentIngesting).
+    ///   cannot be copied in, `.unreadableDocument` when PDFKit refuses the file
+    ///   or when the only document in the folder is markdown that is not UTF-8,
+    ///   and `.renderFailed` when markdown will not lay out. The caller records
+    ///   the failure and shows an error row; it must never delete the folder
+    ///   (Protocols.swift § DocumentIngesting).
     public func ingest(_ item: InboxItem) async throws -> IngestedDocument {
         guard item.isIngestible else {
             throw PencilLoopError.nothingToIngest(folderName: item.folderName)
@@ -88,14 +89,25 @@ public struct DocumentIngestor: DocumentIngesting {
         try makeDirectory(at: destination, folderName: item.folderName)
 
         let metadata = await self.metadata(at: item.directoryURL)
+        let documentId = metadata.uuid ?? UUID()
 
         var markdownURL: URL?
         var markdownSource: String?
+        var markdownIsUnreadable = false
         if let source = item.sourceMarkdownURL {
             let target = destination.appendingPathComponent(DocumentFileNames.sourceMarkdown)
             let data = try materialise(from: source, to: target, folderName: item.folderName)
             markdownURL = target
-            markdownSource = String(data: data, encoding: .utf8)
+            if let text = String(data: data, encoding: .utf8) {
+                markdownSource = text
+            } else {
+                // The bytes are here and they are not UTF-8. Decoding them
+                // lossily would render a document whose text no longer measures
+                // the file it claims to index, and every `sourceRange` in the
+                // map would be a byte or two out for the rest of the document.
+                markdownIsUnreadable = true
+                log.error("source.md in \(item.folderName, privacy: .public) is not UTF-8")
+            }
         }
 
         let outcome: Prepared
@@ -110,8 +122,18 @@ public struct DocumentIngestor: DocumentIngesting {
         } else if let markdownSource {
             outcome = try renderFromMarkdown(
                 markdownSource,
+                documentId: metadata.id ?? documentId.uuidString,
                 destination: destination,
                 folderName: item.folderName
+            )
+        } else if markdownIsUnreadable {
+            // Not `.nothingToIngest`: the folder plainly does contain a
+            // document, and an error row saying otherwise sends the reader
+            // looking for a file that is sitting right there (docs/04-flows.md
+            // § F1).
+            throw PencilLoopError.unreadableDocument(
+                folderName: item.folderName,
+                reason: "\(DocumentFileNames.sourceMarkdown) is not UTF-8 text. Save it as UTF-8 and send it again."
             )
         } else {
             throw PencilLoopError.nothingToIngest(folderName: item.folderName)
@@ -125,7 +147,7 @@ public struct DocumentIngestor: DocumentIngesting {
         )
 
         return IngestedDocument(
-            id: metadata.uuid ?? UUID(),
+            id: documentId,
             externalId: metadata.id,
             title: title,
             folderName: item.folderName,
@@ -196,8 +218,14 @@ public struct DocumentIngestor: DocumentIngesting {
         )
     }
 
+    /// - Parameter documentId: the id this document will be known by —
+    ///   `meta.json`'s when it had one, otherwise the one just minted for it.
+    ///   Stamped into `sourcemap.json`, which is the only thing that lets a
+    ///   source map found on its own be matched back to its document
+    ///   (SourceMap.swift § documentId).
     private func renderFromMarkdown(
         _ source: String,
+        documentId: String,
         destination: URL,
         folderName: String
     ) throws -> Prepared {
@@ -222,10 +250,16 @@ public struct DocumentIngestor: DocumentIngesting {
             )
         }
 
+        // The renderer lays out bytes; it has never heard of `meta.json`, so
+        // the id is stamped on here, where it is known, rather than left as the
+        // nil that made the field's stated purpose unreachable.
+        var sourceMap = rendered.sourceMap
+        sourceMap.documentId = documentId
+
         // A source map that fails to write costs precision, never the document:
         // every consumer treats it as optional and falls back to quoted-text
         // matching (SourceMap.swift header).
-        if let data = try? ContractCoding.encoder().encode(rendered.sourceMap) {
+        if let data = try? ContractCoding.encoder().encode(sourceMap) {
             try? data.write(
                 to: destination.appendingPathComponent(DocumentFileNames.sourceMap),
                 options: .atomic
@@ -236,7 +270,7 @@ public struct DocumentIngestor: DocumentIngesting {
             pdfURL: pdfTarget,
             pageCount: rendered.pageCount,
             extractedText: rendered.extractedText,
-            sourceMap: rendered.sourceMap,
+            sourceMap: sourceMap,
             sourceFormat: .markdown,
             pdfTitle: nil,
             markdownTitle: document.title

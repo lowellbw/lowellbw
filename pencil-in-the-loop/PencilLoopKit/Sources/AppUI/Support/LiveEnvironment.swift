@@ -57,7 +57,15 @@ import Sync
 /// recover from by itself (`LibraryContainer`). Everything else here is
 /// infallible by construction. `RootModel` turns a throw into one sentence on
 /// screen rather than a crash.
-public struct LiveEnvironment: AppEnvironment {
+///
+/// **Nonisolated on purpose.** AppUI's default isolation is `MainActor`, which
+/// would put this initialiser — and with it `ModelContainer`, a synchronous
+/// store open plus any pending migration — on the main thread of a cold launch
+/// with no hop out of it. Every dependency built here belongs to a nonisolated
+/// module, so nothing about this type wants the main actor; `RootModel.start()`
+/// builds it off the main thread instead (docs/03-architecture.md § Performance
+/// targets, the sub-one-second cold launch).
+public nonisolated struct LiveEnvironment: AppEnvironment {
 
     public let store: any DocumentStoring
     public let sync: any SyncCoordinating
