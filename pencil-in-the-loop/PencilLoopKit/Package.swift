@@ -1,4 +1,4 @@
-// swift-tools-version: 6.0
+// swift-tools-version: 6.2
 //
 // PencilLoopKit — every line of app logic lives here, not in the Xcode targets.
 // The .xcodeproj carries two thin shells (the app and the share extension) and
