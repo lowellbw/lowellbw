@@ -96,14 +96,6 @@ struct ShareStagingWriter: Sendable {
         self.appGroupIdentifier = appGroupIdentifier
     }
 
-    /// The file a staged link carries so the app can fetch and render it later.
-    ///
-    /// One line: the absolute URL. Not in `DocumentFileNames` — see the change
-    /// request in this unit's report. It is additive and inert: a reader that
-    /// does not know the name ignores it, and the `source.md` written beside it
-    /// means the directory ingests either way.
-    static let webLocationFileName = "source.url"
-
     /// How long a `.tmp` directory is left before it is treated as the debris
     /// of a killed extension and removed. Generous: a slow copy over a file
     /// provider is not abandonment.
@@ -143,17 +135,21 @@ struct ShareStagingWriter: Sendable {
     /// Stages a shared link without touching the network.
     ///
     /// The directory holds a `source.md` standing in for the page — a heading,
-    /// the link, and a sentence saying it has not been fetched — plus
-    /// `source.url` for the app to fetch from later. The markdown is what makes
-    /// this ingestible today: `InboxScanner.item(at:)` returns nil for a
-    /// directory with neither `document.pdf` nor `source.md`, so a link saved
-    /// as metadata alone would be invisible and lost.
+    /// the link, and a sentence saying it has not been fetched — and the address
+    /// itself goes into `meta.json` as `sourceURL`, for the app to fetch from
+    /// later. That field is where it belongs: it used to be a `source.url` file
+    /// named by a private constant in this file, which is a format nothing else
+    /// in the repo had a name for (Core/Contracts/DocumentMetadata.swift).
+    ///
+    /// The markdown is what makes this ingestible today: `InboxScanner.item(at:)`
+    /// returns nil for a directory with neither `document.pdf` nor `source.md`,
+    /// so a link saved as metadata alone would be invisible and lost.
     ///
     /// - Returns: the folder name that landed in `staging/`.
     /// - Throws: as `stageDocument(copying:title:as:)`.
     @discardableResult
     func stageWebPage(_ address: URL, title: String) throws -> String {
-        try stage(title: title, sourceFormat: .html) { directory in
+        try stage(title: title, sourceFormat: .html, sourceURL: address) { directory in
             let markdown = Data(ShareStagingWriter.placeholderMarkdown(
                 title: title,
                 address: address,
@@ -161,10 +157,6 @@ struct ShareStagingWriter: Sendable {
             ).utf8)
             try markdown.write(
                 to: directory.appendingPathComponent(DocumentFileNames.sourceMarkdown, isDirectory: false),
-                options: [.atomic]
-            )
-            try Data((address.absoluteString + "\n").utf8).write(
-                to: directory.appendingPathComponent(ShareStagingWriter.webLocationFileName, isDirectory: false),
                 options: [.atomic]
             )
         }
@@ -180,6 +172,7 @@ struct ShareStagingWriter: Sendable {
     private func stage(
         title: String,
         sourceFormat: SourceFormat,
+        sourceURL: URL? = nil,
         populate: (URL) throws -> Void
     ) throws -> String {
         let manager = FileManager.default
@@ -206,7 +199,8 @@ struct ShareStagingWriter: Sendable {
                 title: title,
                 createdAt: created,
                 origin: Origin(kind: .share),
-                sourceFormat: sourceFormat
+                sourceFormat: sourceFormat,
+                sourceURL: sourceURL
             )
             try MetadataFile.encode(metadata).write(
                 to: temporary.appendingPathComponent(DocumentFileNames.metadata, isDirectory: false),

@@ -137,6 +137,11 @@ actor InkTestStore: DocumentStoring {
 
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {}
 
+    /// Nothing here ever sends a review, so there is never a status to report.
+    func reviewStatus(documentId: UUID) throws -> ReviewStatus? {
+        ReviewStatus(documentId: documentId)
+    }
+
     // MARK: - Reading time
 
     func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws {}

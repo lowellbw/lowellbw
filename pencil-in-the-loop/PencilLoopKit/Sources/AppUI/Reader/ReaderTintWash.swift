@@ -53,14 +53,18 @@ public struct ReaderTintWash {
 
     /// The wash for a stored setting.
     ///
-    /// - Note: docs/01-design-principles.md § 9 lists four tints —  White,
-    ///   Sepia, Gray and Night — and `PageTint` offers `none`, `cream`, `sepia`
-    ///   and `grey`. White is `.none`, Gray is `.grey`, and there is no Night.
-    ///   See the reader's report: a night wash cannot be done by multiplying,
-    ///   and doing it any other way means inverting the page, which § 9 forbids.
-    ///   Adding a case to `PageTint` is a change request to the lead, so the
-    ///   switch below stays exhaustive and will fail to compile — visibly, in
-    ///   one place — on the day one lands.
+    /// - Note: four tints, and no Night. docs/01-design-principles.md § 9 asked
+    ///   for Books' White, Sepia, Gray and Night; the app ships White
+    ///   (`.none`), Cream, Sepia and Grey, and § 9 has been corrected to say so.
+    ///   A night wash cannot be multiplied — multiply only darkens, so it takes
+    ///   the black text down with the white page — and every other route is
+    ///   inversion, which the same rule forbids for good reasons: negatives
+    ///   instead of figures, a colour scheme nobody chose instead of syntax
+    ///   highlighting, and graphite ink invisible on the page it was drawn on.
+    ///   What a real Night would cost is written down in
+    ///   docs/11-backlog.md § B11. Adding a case to `PageTint` is a change
+    ///   request to the lead, so the switch below stays exhaustive and will fail
+    ///   to compile — visibly, in one place — on the day one lands.
     public static func wash(for tint: PageTint) -> ReaderTintWash {
         switch tint {
         case .none:

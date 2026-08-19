@@ -102,6 +102,56 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertEqual(temp.inboxNames.contains("2026-08-18-broken"), true, "the folder is never deleted")
     }
 
+    func testAFolderThatFailedIsRetriedOnTheNextRefresh() async throws {
+        let temp = try SyncTemporaryFolder()
+        defer { temp.removeAll() }
+        try temp.writeInboxDirectory(named: "2026-08-18-flaky")
+        let store = SyncTestStore()
+        let ingester = SyncTestIngester()
+        await ingester.fail(folderName: "2026-08-18-flaky", reason: "The provider blinked.")
+        let coordinator = SyncCoordinatorTests.coordinator(temp: temp, store: store, ingester: ingester)
+
+        let failed = try await coordinator.refresh()
+        XCTAssertEqual(failed, 0)
+        let failures = await store.failures
+        XCTAssertNotNil(failures["2026-08-18-flaky"], "the failure is recorded, so the folder is now known")
+
+        // Whatever was wrong has passed. Pull-to-refresh is the user asking us
+        // to look again, and it has to actually look — the folder is in
+        // `knownFolderNames()` now, which is exactly the state that used to make
+        // the scanner skip it for the rest of the session.
+        await ingester.succeed(folderName: "2026-08-18-flaky")
+        let recovered = try await coordinator.refresh()
+
+        XCTAssertEqual(recovered, 1, "a transient failure must not be permanent")
+        let attempts = await ingester.attempts(forFolderName: "2026-08-18-flaky")
+        XCTAssertEqual(attempts, 2)
+        let upserted = await store.upserted
+        XCTAssertEqual(upserted.map { $0.folderName }, ["2026-08-18-flaky"])
+    }
+
+    func testABackgroundScanDoesNotRepeatAFailureUntilSomethingChanges() async throws {
+        let temp = try SyncTemporaryFolder()
+        defer { temp.removeAll() }
+        try temp.writeInboxDirectory(named: "2026-08-18-broken")
+        let store = SyncTestStore()
+        let ingester = SyncTestIngester()
+        await ingester.fail(folderName: "2026-08-18-broken", reason: "PDFKit will not open it.")
+        let coordinator = SyncCoordinatorTests.coordinator(temp: temp, store: store, ingester: ingester)
+
+        _ = try await coordinator.refresh()
+        // `start()` scans without the user asking, which is what the timer does.
+        await coordinator.start()
+        await coordinator.stop()
+
+        let attempts = await ingester.attempts(forFolderName: "2026-08-18-broken")
+        XCTAssertEqual(
+            attempts,
+            1,
+            "a document that cannot be read is not re-downloaded every fifteen seconds; the retry is the user's gesture"
+        )
+    }
+
     func testAnUnreachableFolderIsAThrowingRefresh() async throws {
         let temp = try SyncTemporaryFolder()
         temp.removeAll()
@@ -182,6 +232,10 @@ final class SyncCoordinatorTests: XCTestCase {
         XCTAssertTrue(
             queued.directoryURL.path.hasPrefix(temp.queueRootURL.path),
             "offline is 'will send when online', not a failure"
+        )
+        XCTAssertTrue(
+            queued.isQueued,
+            "the Sent screen reads this to say 'will send when online' rather than 'sent' (DTOs.swift)"
         )
         XCTAssertEqual(queue.queuedPayloads().count, 1)
 

@@ -107,9 +107,6 @@ public struct ReaderView: View {
                 await self.model.noteActive(phase == .active)
             }
         }
-        .onChange(of: self.model.capture?.comments.count ?? 0) { _, count in
-            self.model.noteCommentCountChanged(count)
-        }
     }
 
     // MARK: - Layers

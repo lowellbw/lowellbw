@@ -96,7 +96,26 @@ final class OriginDecodingTests: XCTestCase {
     func testReturnPathOfTheWrongTypeDoesNotThrow() throws {
         let meta = try decodeMetadata(#"{"origin":{"kind":"cowork","returnPath":42}}"#)
         XCTAssertEqual(meta.resolvedOrigin.kind, .cowork)
-        XCTAssertNil(meta.resolvedOrigin.returnPath)
+
+        // Not nil, and that is the tolerance working rather than failing.
+        // `ReturnPath.init(from:)` never throws: handed something that is not a
+        // keyed container it degrades to `.none` (Origin.swift), so
+        // `decodeIfPresent` on a key that *is* present returns that value and
+        // `try?` has nothing to turn into nil. The nil case is a return path
+        // that was not in the JSON at all.
+        //
+        // Both shapes mean the same thing downstream — `canReturn` is false
+        // either way — so do not "fix" this by making the decoder throw. The
+        // never-throwing guarantee is what docs/04-flows.md § F1 leans on: a
+        // malformed `meta.json` must never cost the document.
+        XCTAssertEqual(meta.resolvedOrigin.returnPath?.type, ReturnPathType.none)
+        XCTAssertFalse(meta.resolvedOrigin.canReturn)
+    }
+
+    func testAnAbsentReturnPathIsNil() throws {
+        let meta = try decodeMetadata(#"{"origin":{"kind":"cowork"}}"#)
+        XCTAssertNil(meta.resolvedOrigin.returnPath, "absent is the only thing that decodes to nil")
+        XCTAssertFalse(meta.resolvedOrigin.canReturn)
     }
 
     func testMissingFieldsAreNilRatherThanFatal() throws {

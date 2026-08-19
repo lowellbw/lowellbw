@@ -140,6 +140,28 @@ final class InboxItemPinnerTests: XCTestCase {
         XCTAssertFalse(pinner.isPinnedAndCurrent(item))
     }
 
+    func testInvalidatingASnapshotKeepsEveryByte() async throws {
+        let temp = try SyncTemporaryFolder()
+        defer { temp.removeAll() }
+        let directory = try temp.writeInboxDirectory(named: "2026-08-18-ingest-failed")
+        let pinner = InboxItemPinner(destinationRoot: temp.pinnedRootURL)
+        let scannedItem = try await InboxScanner().item(at: directory)
+        let item = try XCTUnwrap(scannedItem)
+        _ = try await pinner.pin(item)
+
+        // The copy landed and the ingest did not, so the library does not
+        // reflect this directory: it must be pinned and ingested again rather
+        // than skipped as current.
+        pinner.invalidateSnapshot(forFolderNamed: "2026-08-18-ingest-failed")
+
+        XCTAssertFalse(pinner.isPinnedAndCurrent(item), "an unreflected copy is not one to skip")
+        let pinned = pinner.pinnedDirectory(forFolderNamed: "2026-08-18-ingest-failed")
+        XCTAssertTrue(
+            FileManager.default.fileExists(atPath: pinned.appendingPathComponent("document.pdf").path),
+            "the bytes are the user's: a document readable yesterday is readable today"
+        )
+    }
+
     func testAFolderRewrittenInPlaceIsNoLongerCurrent() async throws {
         let temp = try SyncTemporaryFolder()
         defer { temp.removeAll() }

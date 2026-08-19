@@ -156,7 +156,7 @@ public final class CommentGestureController: NSObject, UIGestureRecognizerDelega
             // Remember the canvas and its pre-press drawing now, while the dot
             // is certainly still in flight and certainly not committed.
             let page = resolver?.pageIndex(at: point)
-            canceller.arm(page.flatMap { resolver?.canvas(forPageIndex: $0) })
+            canceller.arm(page.flatMap { resolver?.inkOverlay(forPageIndex: $0) })
             onTrigger?(.armed(point: point))
         case .ended, .cancelled, .failed:
             canceller.disarm()

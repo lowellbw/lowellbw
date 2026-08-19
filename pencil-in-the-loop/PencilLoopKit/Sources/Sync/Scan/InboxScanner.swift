@@ -8,9 +8,18 @@
 //  what lets a scan run every fifteen seconds without costing anything.
 //
 //  An actor rather than a struct for one reason: it remembers the modification
-//  date it last saw for each folder, which is how a folder that was rewritten
-//  in place gets noticed while a folder that has not changed is skipped
-//  (Protocols.swift § InboxScanning).
+//  date at which each folder was last *handled*, which is how a folder that was
+//  rewritten in place gets noticed while a folder that has not changed is
+//  skipped (Protocols.swift § InboxScanning).
+//
+//  ─── HANDLED, NOT SEEN ───────────────────────────────────────────────────────
+//  That memory is written by `markHandled(_:)`, which the coordinator calls
+//  after a folder has been ingested or found already pinned and current — never
+//  by `scan` itself. The difference is the whole behaviour: a scan that recorded
+//  every item it returned marked a folder seen before anybody had tried to
+//  ingest it, so a folder whose first ingest failed was skipped by every later
+//  scan in the session and the "it will be retried on the next refresh" the
+//  pinner promises was untrue.
 //
 
 import Foundation
@@ -27,18 +36,23 @@ import Core
 /// calls it, and first launch calls it.
 public actor InboxScanner: InboxScanning {
 
-    /// Folder name to the modification date this scanner last reported for it.
+    /// Folder name to the modification date at which it was last handled, as
+    /// reported by `markHandled(_:)`.
+    ///
     /// In memory only: on a cold start every known folder is reported once, and
     /// the coordinator decides from its pinned copy whether there is anything
     /// to do (`InboxItemPinner.isPinnedAndCurrent(_:)`).
-    private var lastSeen: [String: Date] = [:]
+    private var lastHandled: [String: Date] = [:]
 
     public init() {}
 
     /// - Parameters:
     ///   - folder: the sync root. The caller must already hold access.
     ///   - knownFolderNames: names already in the library. A known folder is
-    ///     skipped unless its contents changed since this scanner last looked.
+    ///     skipped only once it has been handled at its current modification
+    ///     date — see `markHandled(_:)`. A folder whose ingest failed is
+    ///     reported again by the next scan, which is what makes a retry
+    ///     possible at all.
     /// - Returns: items in folder-name order, which is chronological given the
     ///   date prefix, plus every subdirectory that could not be read.
     /// - Throws: `.folderUnavailable` when `inbox/` cannot be listed.
@@ -83,12 +97,13 @@ public actor InboxScanner: InboxScanning {
             }
             guard let item else { continue }
 
-            let previous = lastSeen[item.folderName]
-            lastSeen[item.folderName] = item.modifiedAt
-
-            if knownFolderNames.contains(item.folderName) {
-                // Known and unchanged since we last looked: nothing to do.
-                if let previous, previous >= item.modifiedAt { continue }
+            // Known, and already handled at this modification date: nothing to
+            // do. Nothing is recorded here — a folder is marked handled by the
+            // coordinator once it really has been (see the file header).
+            if knownFolderNames.contains(item.folderName),
+               let handled = lastHandled[item.folderName],
+               handled >= item.modifiedAt {
+                continue
             }
             found.append(item)
         }
@@ -139,12 +154,27 @@ public actor InboxScanner: InboxScanning {
         return item
     }
 
-    /// Forgets what this scanner has seen, so the next scan reports every
-    /// folder again. The coordinator calls it when the folder becomes
+    /// Records that a folder has been dealt with at the modification date the
+    /// item carries, so later scans may skip it until it changes again.
+    ///
+    /// The coordinator calls it after an ingest succeeds, and for a folder it
+    /// found already pinned and current. It deliberately does **not** call it
+    /// for a folder that failed: an ingest failure is temporary until proven
+    /// otherwise, and a folder nobody has handled has to keep coming back
+    /// (`InboxItemPinner` promises the user exactly that).
+    public func markHandled(_ item: InboxItem) {
+        lastHandled[item.folderName] = item.modifiedAt
+    }
+
+    /// Forgets what this scanner has handled, so the next scan reports every
+    /// folder again.
+    ///
+    /// The coordinator calls it when the folder comes back after being
     /// unavailable, because anything could have happened while we were not
-    /// looking.
+    /// looking, and on every `refresh()`, because pull-to-refresh is the user
+    /// asking for exactly that.
     public func forgetSeenFolders() {
-        lastSeen.removeAll()
+        lastHandled.removeAll()
     }
 
     /// Every directory name currently in `inbox/`.

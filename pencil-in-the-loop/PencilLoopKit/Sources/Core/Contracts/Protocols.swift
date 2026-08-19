@@ -190,6 +190,21 @@ public protocol SpeechTranscribing: Sendable {
     /// Callers use this return value rather than the last streamed update —
     /// the engine may finalise a trailing word after the last yield.
     func stop() async -> String
+
+    /// Every language this engine can transcribe, downloaded or not.
+    ///
+    /// The Settings language picker is the only caller (docs/02-spec.md § S6).
+    /// Without it that picker is a hardcoded list of BCP-47 identifiers that
+    /// says nothing about the device it is running on — it offers languages the
+    /// engine cannot do and hides ones it can.
+    ///
+    /// **On failure or unavailability:** returns an empty array. Never throws.
+    /// An empty answer means "this engine cannot say", and the caller falls
+    /// back to showing the currently selected language alone rather than an
+    /// error: a picker with one row is a worse Settings screen, not a broken
+    /// app. Whether the assets for a given language are *installed* is a
+    /// separate question, and `assetState()` is the one that answers it.
+    func supportedLocales() async -> [Locale]
 }
 
 /// Document-specific vocabulary and transcript repair.
@@ -557,6 +572,29 @@ public protocol DocumentStoring: Actor {
 
     /// Stores a reply an agent wrote (docs/04-flows.md § F6).
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws
+
+    /// What has happened to this document's review: when it was sent, where the
+    /// bundle went, and whether a reply has come back.
+    ///
+    /// The read half of `recordReviewSent(documentId:at:directoryName:)` and
+    /// `recordReply(documentId:text:receivedAt:)`, which had none. Without it
+    /// the reply loop docs/08-open-questions.md § Q3 kept in v1 is only half
+    /// reachable: the Sent screen could see a `SyncEvent.replyReceived` while it
+    /// happened to be open, and a reply that arrived after the sheet closed —
+    /// which is nearly all of them, since an agent takes minutes — could never
+    /// be shown at all. The store already had the text; nothing could ask for
+    /// it.
+    ///
+    /// Deliberately a separate call rather than four more fields on
+    /// `DocumentDetail`: the reader opens a document far more often than
+    /// anybody looks at a sent review, and this is the review sheet's question,
+    /// not the reader's.
+    ///
+    /// - Returns: the status, or nil when there is no such document. A document
+    ///   that has never been reviewed returns a `ReviewStatus` with everything
+    ///   nil rather than nil itself, so a caller can tell "never sent" from
+    ///   "no such document".
+    func reviewStatus(documentId: UUID) throws -> ReviewStatus?
 
     // Reading time
 

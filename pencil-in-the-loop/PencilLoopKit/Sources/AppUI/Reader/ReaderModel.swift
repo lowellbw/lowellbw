@@ -98,8 +98,6 @@ public final class ReaderModel {
     private var environment: (any AppEnvironment)?
     private var toolPicker: InkToolPickerController?
     private var sessionStartedAt: Date?
-    private var hasNotedAnnotation = false
-    private var lastKnownCommentCount = 0
     private var pageWriteTask: Task<Void, Never>?
     private var settingsWriteTask: Task<Void, Never>?
 
@@ -126,7 +124,6 @@ public final class ReaderModel {
         self.documentId = newDocumentId
         self.environment = newEnvironment
         self.unavailableMessage = nil
-        self.hasNotedAnnotation = false
 
         let loaded: DocumentDetail?
         do {
@@ -143,7 +140,6 @@ public final class ReaderModel {
             return
         }
         self.detail = detail
-        self.lastKnownCommentCount = detail.comments.count
         self.currentPageIndex = ReaderModel.clamp(detail.lastReadPage, pageCount: detail.pageCount)
 
         let settings = await newEnvironment.settings.settings
@@ -216,7 +212,6 @@ public final class ReaderModel {
         if let pool {
             await pool.close()
         }
-        await self.promoteIfAnnotated()
 
         // A newer document has taken the model over; everything below would
         // dismantle its state rather than this one's.
@@ -252,7 +247,6 @@ public final class ReaderModel {
                 return
             }
             await self.flushReadingTime()
-            await self.promoteIfAnnotated()
         }
     }
 
@@ -377,7 +371,6 @@ public final class ReaderModel {
         if let pool = self.canvasPool {
             await pool.flush()
         }
-        await self.promoteIfAnnotated()
     }
 
     private func flushReadingTime() async {
@@ -397,48 +390,24 @@ public final class ReaderModel {
 
     // MARK: - Annotation
 
-    /// A comment has just been written. Comments are annotations, so the first
-    /// one moves the document out of Unread.
-    public func noteCommentCountChanged(_ count: Int) {
-        defer { self.lastKnownCommentCount = count }
-        guard count > self.lastKnownCommentCount else { return }
-        self.promoteToReviewing()
-    }
-
-    /// Moves `.unread → .reviewing` when this session has left a mark
-    /// (docs/04-flows.md § F2 — on the first annotation, never on open).
-    ///
-    /// Ink is found by asking the library rather than by watching the Pencil.
-    /// `DocumentSummary.hasInk` is one cheap read and it is true the moment the
-    /// autosave lands, whereas a gesture recogniser watching for Pencil
-    /// contact would be a third recogniser on the drawing path to answer a
-    /// question nobody sees the answer to until they go back to the library.
-    /// Called on the reading-time tick, on backgrounding, and on close, which
-    /// is every moment before the library can be looked at again.
-    private func promoteIfAnnotated() async {
-        guard !self.hasNotedAnnotation else { return }
-        guard let detail = self.detail, detail.state == .unread else { return }
-        guard let environment = self.environment, let documentId = self.documentId else { return }
-        let summary = try? await environment.store.summary(id: documentId)
-        guard let summary, summary.hasInk || summary.commentCount > 0 else { return }
-        self.promoteToReviewing()
-    }
-
-    private func promoteToReviewing() {
-        guard !self.hasNotedAnnotation else { return }
-        guard let detail = self.detail, detail.state == .unread else { return }
-        guard let environment = self.environment else { return }
-        self.hasNotedAnnotation = true
-        self.detail?.state = .reviewing
-        let documentId = detail.id
-        Task {
-            do {
-                try await environment.store.setState(.reviewing, documentId: documentId)
-            } catch {
-                ReaderLog.reader.error("A document could not be moved to Reviewing; the library still shows it as Unread.")
-            }
-        }
-    }
+    // ─── `.unread → .reviewing` IS NOT DONE HERE ─────────────────────────────
+    // The reader used to promote the document itself: it polled
+    // `DocumentSummary.hasInk` and the comment count on every reading-time tick,
+    // on backgrounding and on close, and wrote `.reviewing` when it saw one.
+    //
+    // Storage already does it, at the only moment that cannot be missed or
+    // raced — inside the write. `DocumentStore.addComment(_:documentId:)` and
+    // `saveDrawing(_:pageIndex:documentId:)` both call `markAnnotated`, which
+    // is "on the first annotation, never on open" (docs/04-flows.md § F2)
+    // stated once. So the reader's copy was a second writer of the same rule,
+    // reached by polling, and two writers on document state is worse than one
+    // wherever they happen to agree today. The comment unit had a third and
+    // removed it for the same reason.
+    //
+    // Nothing is lost by the reader not knowing: the library re-reads its rows
+    // from the store, and the review sheet is handed a fresh `DocumentDetail`
+    // when it opens.
+    // ─────────────────────────────────────────────────────────────────────────
 
     // MARK: - Support
 

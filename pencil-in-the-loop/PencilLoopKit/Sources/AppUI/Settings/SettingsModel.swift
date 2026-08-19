@@ -33,6 +33,16 @@ public final class SettingsModel {
     /// cheap by contract (Protocols.swift § SpeechTranscribing).
     public private(set) var speechAssetState: SpeechAssetState = .ready
 
+    /// The languages the transcriber says it can handle, as BCP-47 identifiers
+    /// in the order the picker shows them.
+    ///
+    /// Empty when the engine will not say, which is the documented answer and
+    /// not a failure (Protocols.swift § SpeechTranscribing.supportedLocales).
+    /// The picker then offers the selected language alone — one row, honestly
+    /// labelled, rather than fourteen identifiers hardcoded in a view that has
+    /// no idea what this device can do.
+    public private(set) var supportedLocaleIdentifiers: [String] = []
+
     /// One line under whichever row last failed, or the result of a purge.
     public private(set) var statusMessage: String?
 
@@ -64,10 +74,28 @@ public final class SettingsModel {
         return false
     }
 
+    /// The rows the language picker shows: what the engine supports, with
+    /// whatever is currently selected kept in the list even when it is not one
+    /// of them.
+    ///
+    /// A setting that vanishes from its own picker is a setting the user cannot
+    /// see they have.
+    public var languageIdentifiers: [String] {
+        var identifiers = supportedLocaleIdentifiers
+        let current = settings.transcriptionLocaleIdentifier
+        if identifiers.contains(current) == false {
+            identifiers.insert(current, at: 0)
+        }
+        return identifiers
+    }
+
     /// Reads everything the screen displays. Safe to call every time it appears.
     public func load() async {
         settings = await environment.settings.settings
         speechAssetState = await environment.transcriber.assetState()
+        supportedLocaleIdentifiers = await environment.transcriber
+            .supportedLocales()
+            .map { $0.identifier(.bcp47) }
         do {
             storageBytes = try await environment.store.storageBytes()
         } catch {
@@ -102,13 +130,16 @@ public final class SettingsModel {
     }
 
     /// Adopts a folder the user picked in Settings, and re-reads what changed.
-    public func adoptFolder(_ url: URL, folderAccess: any FolderAccessing) async {
+    public func adoptFolder(_ url: URL) async {
         do {
-            _ = try await SyncFolderChoice.adopt(
+            let folder = try await SyncFolderChoice.adopt(
                 url,
-                folderAccess: folderAccess,
+                folderAccess: environment.folderAccess,
                 settings: environment.settings
             )
+            // A folder chosen in Settings that only takes effect after a
+            // relaunch is a folder the user will assume did not work.
+            await environment.adoptFolder(folder)
             settings = await environment.settings.settings
             statusMessage = nil
         } catch {

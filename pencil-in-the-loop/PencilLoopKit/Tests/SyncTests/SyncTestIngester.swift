@@ -31,6 +31,16 @@ actor SyncTestIngester: DocumentIngesting {
         failures[folderName] = reason
     }
 
+    /// Stops it throwing for that folder — a transient failure that has passed.
+    func succeed(folderName: String) {
+        failures[folderName] = nil
+    }
+
+    /// How many times one folder was handed over.
+    func attempts(forFolderName folderName: String) -> Int {
+        received.filter { $0.folderName == folderName }.count
+    }
+
     func ingest(_ item: InboxItem) async throws -> IngestedDocument {
         received.append(item)
         if let reason = failures[item.folderName] {

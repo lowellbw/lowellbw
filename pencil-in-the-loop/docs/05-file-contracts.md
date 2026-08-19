@@ -72,6 +72,13 @@ Two fields commonly get written by the wrong side:
 | `pageCount` | the ingesting app | A markdown sender cannot know it — pagination happens when the iPad renders the PDF. Optional in a sender's `meta.json`, advisory when present, and the rendered PDF is authoritative. |
 | `returnPath.triggerId` | the sender | Allowed on **any** return-path type, not just `poke`. `checkin` also creates a scheduled task, and the Mac-side watcher wants its id to deduplicate. |
 
+One more optional field, absent from the example above because most documents do not have
+one:
+
+| Field | Written by | Notes |
+|---|---|---|
+| `sourceURL` | the sender | Absolute URL the document came from on the web. The share extension writes it for a shared link: it does no network work, so it stages a placeholder `source.md` and records the address for the app to fetch and render later. Any sender may write it; nothing in ingest branches on it today, and a reader that does not know the key ignores it. |
+
 `returnPath` is one route per document, not a list of candidates. `checkin` is the v1
 default; `poke` is used only when the sender knows the Mac watcher is installed. If a
 second route is ever needed, add an ordered array rather than overloading this field.

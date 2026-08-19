@@ -52,13 +52,28 @@ public struct DocumentMetadata: Codable, Sendable, Hashable {
     /// from the rendered PDF, and they can disagree.
     public var pageCount: Int?
 
+    /// Where the document came from on the web, when it came from the web.
+    ///
+    /// Written by the share extension for a shared link: the extension does no
+    /// network work, so it stages a placeholder `source.md` and records the
+    /// address here for the app to fetch and render later
+    /// (docs/06-integrations.md § Share extension). It had been going into a
+    /// `source.url` file named by a private constant in the extension, which
+    /// meant the one piece of the app that will read it had no contract name
+    /// for it.
+    ///
+    /// Optional and additive: a reader that does not know the key ignores it,
+    /// and nothing in ingest branches on it today.
+    public var sourceURL: URL?
+
     public init(
         id: String? = nil,
         title: String? = nil,
         createdAt: Date? = nil,
         origin: Origin? = nil,
         sourceFormat: SourceFormat? = nil,
-        pageCount: Int? = nil
+        pageCount: Int? = nil,
+        sourceURL: URL? = nil
     ) {
         self.id = id
         self.title = title
@@ -66,6 +81,7 @@ public struct DocumentMetadata: Codable, Sendable, Hashable {
         self.origin = origin
         self.sourceFormat = sourceFormat
         self.pageCount = pageCount
+        self.sourceURL = sourceURL
     }
 
     /// The value used when `meta.json` is missing entirely.
@@ -88,6 +104,7 @@ public struct DocumentMetadata: Codable, Sendable, Hashable {
         case origin
         case sourceFormat
         case pageCount
+        case sourceURL
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -98,6 +115,7 @@ public struct DocumentMetadata: Codable, Sendable, Hashable {
         try container.encodeIfPresent(origin, forKey: .origin)
         try container.encodeIfPresent(sourceFormat, forKey: .sourceFormat)
         try container.encodeIfPresent(pageCount, forKey: .pageCount)
+        try container.encodeIfPresent(sourceURL?.absoluteString, forKey: .sourceURL)
     }
 
     /// Never throws for a document that is valid JSON. A top level that is not
@@ -114,6 +132,19 @@ public struct DocumentMetadata: Codable, Sendable, Hashable {
         self.origin = try? container.decodeIfPresent(Origin.self, forKey: .origin)
         self.sourceFormat = try? container.decodeIfPresent(SourceFormat.self, forKey: .sourceFormat)
         self.pageCount = try? container.decodeIfPresent(Int.self, forKey: .pageCount)
+        self.sourceURL = DocumentMetadata.lenientURL(container, .sourceURL)
+    }
+
+    /// A URL from its string form. Anything that is not a parseable absolute
+    /// URL is nil rather than an error: a malformed address costs a "fetch this
+    /// page later", never the document.
+    private static func lenientURL(
+        _ container: KeyedDecodingContainer<CodingKeys>,
+        _ key: CodingKeys
+    ) -> URL? {
+        guard let text = try? container.decodeIfPresent(String.self, forKey: key) else { return nil }
+        guard let text, text.isEmpty == false else { return nil }
+        return URL(string: text)
     }
 
     /// Accepts whatever the decoder's date strategy handles, then falls back to

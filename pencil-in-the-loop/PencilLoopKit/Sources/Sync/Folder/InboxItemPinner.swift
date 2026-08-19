@@ -223,6 +223,11 @@ public struct InboxItemPinner: Sendable {
 
         do {
             try manager.createDirectory(at: destinationRoot, withIntermediateDirectories: true)
+            // A pin that was interrupted by a crash left its staging directory —
+            // a whole copy of a document — inside the documents root, where
+            // nothing looks for it and `DocumentStore.storageBytes()` counts it.
+            // Sweeping here is the only moment this module is certain to reach.
+            StagingSweeper.sweep(in: destinationRoot)
             try manager.createDirectory(at: staging, withIntermediateDirectories: true)
         } catch {
             throw PencilLoopError.materialisationFailed(
@@ -278,6 +283,24 @@ public struct InboxItemPinner: Sendable {
     /// never decides to remove them (docs/02-spec.md § S6).
     public func removePinnedCopy(forFolderNamed folderName: String) {
         try? FileManager.default.removeItem(at: pinnedDirectory(forFolderNamed: folderName))
+    }
+
+    /// Drops a pinned directory's completion sidecar and nothing else.
+    ///
+    /// For the case where the copy finished and the *ingest* did not. The bytes
+    /// on disk are then in the same position as a half-finished copy — the
+    /// library does not reflect them — and `isPinnedAndCurrent(_:)` would
+    /// otherwise answer true for ever, so the coordinator would skip the folder
+    /// on every later scan and the document would never reach the library at
+    /// all. Without the sidecar the next scan pins and ingests it again.
+    ///
+    /// Every file stays exactly where it is, deliberately: a document that was
+    /// readable yesterday is still readable today (docs/02-spec.md
+    /// § Cross-cutting), whatever went wrong with the newest revision.
+    public func invalidateSnapshot(forFolderNamed folderName: String) {
+        let url = pinnedDirectory(forFolderNamed: folderName)
+            .appendingPathComponent(InboxItemPinner.snapshotFileName, isDirectory: false)
+        try? FileManager.default.removeItem(at: url)
     }
 
     // MARK: - Verification, as pure functions

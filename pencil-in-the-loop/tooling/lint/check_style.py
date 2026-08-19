@@ -166,15 +166,30 @@ def strip_swift(text):
     return "".join(out)
 
 
+MACRO_ENTRY = re.compile(r"^#[A-Za-z_]\w*$")
+
+
 def read_list(name):
+    """Entries from an allow-list file.
+
+    `#` starts a comment, except when it opens a macro entry — `#Preview`,
+    `#Predicate` — which check_decls.py allow-lists with the hash attached so
+    that the bare word stays undeclared. The spelling check below matches on
+    bare tokens, so a macro entry never exempts anything here; it is read only
+    so that the two scripts agree about what this file says.
+    """
     path = os.path.join(HERE, name)
     if not os.path.exists(path):
         return set()
     entries = set()
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
-            line = line.split("#", 1)[0].strip()
             for word in line.split():
+                if MACRO_ENTRY.match(word):
+                    entries.add(word)
+                    continue
+                if word.startswith("#"):
+                    break
                 entries.add(word)
     return entries
 

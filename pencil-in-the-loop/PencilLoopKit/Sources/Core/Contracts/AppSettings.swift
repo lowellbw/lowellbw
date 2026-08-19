@@ -74,6 +74,21 @@ public struct AppSettings: Codable, Sendable, Hashable {
 /// Not a hex value in sight: each case maps to a system-derived colour in the UI
 /// layer (docs/01-design-principles.md § 1). Core names the choice, AppUI knows
 /// what it looks like.
+///
+/// **There is no Night, and that is a decision rather than an omission.** The
+/// four cases here are White (`none`), Cream, Sepia and Grey. docs/01 asked for
+/// Books' four — White, Sepia, Gray, Night — and Night is the one that cannot
+/// be built the way the same rule requires: the wash is a multiply-blended
+/// rectangle over the rendered page (`ReaderTintWash`), multiply can only
+/// darken, and darkening a white page towards black takes the black text with
+/// it. Every alternative — inverting the raster, a difference or exclusion
+/// blend, `colorInvert()` — is inversion under another name, which rule 9
+/// forbids for good reasons: it turns figures into negatives and
+/// syntax-highlighted code into a colour scheme nobody chose, and it makes
+/// graphite ink invisible on the page it was drawn on. docs/01 § 9 is corrected
+/// to match, and docs/11 carries what a real Night would cost. Adding a case
+/// here is a change request to the lead, and `ReaderTintWash.wash(for:)`
+/// switches exhaustively so it fails visibly, in one place, if one ever lands.
 public enum PageTint: String, Codable, Sendable, CaseIterable, Hashable {
     case none
     case cream
@@ -122,4 +137,17 @@ public enum InkToolKind: String, Codable, Sendable, CaseIterable, Hashable {
     case marker
     case monoline
     case highlighter
+
+    /// The name the Settings picker shows, alongside every other vocabulary in
+    /// this file and in Identifiers.swift. It lived in `SettingsView` as a
+    /// local `switch`, which is one more place for five strings to drift.
+    public var displayName: String {
+        switch self {
+        case .pen: return "Pen"
+        case .pencil: return "Pencil"
+        case .marker: return "Marker"
+        case .monoline: return "Monoline"
+        case .highlighter: return "Highlighter"
+        }
+    }
 }

@@ -57,8 +57,9 @@ public final class ReaderPageResolver: CommentPageResolving {
     public func noteOverlay(_ controller: PageCanvasController, forPageIndex pageIndex: Int) {
         // A recycled controller can be handed to a new page before PDFKit says
         // the old one has gone. Leaving both entries in place would answer
-        // `canvas(forPageIndex:)` with a canvas that is showing a different
-        // page, and the comment unit would cancel a stroke on the wrong one.
+        // `inkOverlay(forPageIndex:)` with a controller that is showing a
+        // different page, and the comment unit would cancel a stroke on the
+        // wrong one.
         let stale = self.overlays
             .filter { $0.value === controller && $0.key != pageIndex }
             .map(\.key)
@@ -104,8 +105,8 @@ public final class ReaderPageResolver: CommentPageResolving {
         return ReaderTextHitFactory.hit(atPagePoint: pagePoint, on: page, pageIndex: pageIndex)
     }
 
-    public func canvas(forPageIndex pageIndex: Int) -> PKCanvasView? {
-        self.overlays[pageIndex]?.canvasView
+    public func inkOverlay(forPageIndex pageIndex: Int) -> PageCanvasController? {
+        self.overlays[pageIndex]
     }
 
     public func viewRect(forNormalisedRect rect: NormalisedRect, pageIndex: Int) -> CGRect? {

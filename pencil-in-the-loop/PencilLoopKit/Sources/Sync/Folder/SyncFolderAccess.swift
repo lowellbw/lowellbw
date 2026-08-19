@@ -18,6 +18,21 @@
 //     needs no scope at all. Treating that as `.accessDenied` would make the
 //     whole module untestable and would break the App Group import path.
 //
+//  ─── OVERLAPPING SCOPES ON ONE ROOT ──────────────────────────────────────────
+//  Two callers reach the same folder from two actors: `SyncCoordinator` holds a
+//  scope across a whole scan, and `PollingFolderWatcher` opens one of its own
+//  every fifteen seconds. Whichever finishes first used to call
+//  `stopAccessingSecurityScopedResource()`, and on a provider that does not
+//  reference-count that closes the scope under an in-flight pin — which
+//  surfaces, much later and somewhere else, as a spurious
+//  `.materialisationFailed`.
+//
+//  So this type counts the opens itself, per root path, in `ScopeRegistry`
+//  below. The first `beginAccess` really starts the scope and the last
+//  `endAccess` really stops it; everything in between is bookkeeping. Callers
+//  are unaffected — start and stop still have to balance — but nesting and
+//  overlap are now safe rather than lucky.
+//
 
 import Foundation
 import Core
@@ -39,7 +54,8 @@ import Core
 ///   `beginAccess(to:)` / `endAccess(to:wasStarted:)` remain here, outside the
 ///   protocol, for the one caller that opens a scope in one method and closes
 ///   it in another — `SyncCoordinator`, whose scan spans several collaborators.
-///   Everything else should use `withAccess`.
+///   Everything else should use `withAccess`. Both routes share one per-root
+///   claim count, so overlapping callers cannot close a scope under each other.
 public struct SyncFolderAccess: FolderAccessing {
 
     public init() {}
@@ -111,10 +127,10 @@ public struct SyncFolderAccess: FolderAccessing {
     /// Runs `body` with the security scope open, closing it afterwards even if
     /// `body` throws.
     ///
-    /// - Note: not re-entrant. Do not call it from inside another
-    ///   `withAccess`/`beginAccess` for the same folder — the scope is a
-    ///   counted resource and a nested pair closes it out from under the outer
-    ///   one on some providers.
+    /// - Note: nesting is safe here — this type counts the opens per root (see
+    ///   the file header), so an inner pair does not close the scope out from
+    ///   under an outer one. Prefer not to nest anyway: a reader should be able
+    ///   to see where the scope opens.
     /// - Throws: `.accessDenied` when the scope will not open and the root is
     ///   not readable without one; otherwise whatever `body` threw.
     public func withAccess<T: Sendable>(
@@ -134,8 +150,9 @@ public struct SyncFolderAccess: FolderAccessing {
     ///
     /// The scope is held for the whole of `body`, suspensions included, which
     /// is what the synchronous overload cannot do and what scanning, pinning
-    /// and writing all need. Same non-re-entrancy rule: do not open another
-    /// scope on the same folder inside `body`.
+    /// and writing all need. A scope opened inside `body` — by this actor or
+    /// another — joins this one and cannot close it early (see the file
+    /// header).
     ///
     /// - Throws: `.accessDenied` when the scope will not open and the root is
     ///   not readable without one; otherwise whatever `body` threw.
@@ -165,24 +182,28 @@ public struct SyncFolderAccess: FolderAccessing {
 
     // MARK: - Access that spans an await
 
-    /// Opens the security scope and reports whether it actually opened.
+    /// Opens the security scope, or joins one this process already holds, and
+    /// reports whether the caller now holds a claim on it.
     ///
     /// Pair it with `endAccess(to:wasStarted:)` in a `defer`, always, and pass
-    /// the value this returned — Apple's rule is that only a `true` from
-    /// `startAccessingSecurityScopedResource()` may be balanced by a stop.
+    /// the value this returned — an unbalanced claim keeps the scope open for
+    /// the life of the process, and a stop that was never started is the bug
+    /// this counting exists to prevent.
     ///
-    /// `false` is not a failure. It is what a plain file URL returns, and the
-    /// caller should carry on if the root is readable.
+    /// `false` is not a failure. It is what a plain file URL returns — an App
+    /// Group container, a temp directory in a test — and the caller should carry
+    /// on if the root is readable.
     @discardableResult
     public func beginAccess(to folder: SyncFolder) -> Bool {
-        folder.rootURL.startAccessingSecurityScopedResource()
+        SyncFolderAccess.scopes.begin(folder.rootURL)
     }
 
-    /// Closes a scope opened by `beginAccess(to:)`. A no-op when `wasStarted`
-    /// is false, which is the only correct behaviour.
+    /// Releases a claim taken by `beginAccess(to:)`, closing the scope when it
+    /// was the last one. A no-op when `wasStarted` is false, which is the only
+    /// correct behaviour.
     public func endAccess(to folder: SyncFolder, wasStarted: Bool) {
         guard wasStarted else { return }
-        folder.rootURL.stopAccessingSecurityScopedResource()
+        SyncFolderAccess.scopes.end(folder.rootURL)
     }
 
     /// Whether the root is usable once the scope is already open.
@@ -238,6 +259,68 @@ public struct SyncFolderAccess: FolderAccessing {
             throw PencilLoopError.folderUnavailable(
                 reason: "\(SyncFolder.inboxDirectoryName) and \(SyncFolder.outboxDirectoryName) could not be created. \(error.localizedDescription)"
             )
+        }
+    }
+
+    // MARK: - Scope counting
+
+    /// The one registry for this process. Every `beginAccess`/`endAccess` pair
+    /// in the app goes through it, whichever actor made the call.
+    private static let scopes = ScopeRegistry()
+
+    /// How many claims each root has open, so two callers on one folder share a
+    /// scope rather than closing it under each other.
+    ///
+    /// Keyed by standardised path: the coordinator and the watcher hold two
+    /// `URL` values for the same folder and have to count as one root. The URL
+    /// that opened the scope is kept so the stop is made against the same one.
+    // SAFETY: `open` is only ever read or written with `lock` held, and the
+    // class has no other mutable state. It is a final class with no
+    // inheritance, so no subclass can add any.
+    private final class ScopeRegistry: @unchecked Sendable {
+
+        private let lock = NSLock()
+        private var open: [String: (url: URL, count: Int)] = [:]
+
+        /// Opens the scope for a root, or joins one already open for it.
+        ///
+        /// - Returns: true when the caller now holds a claim it must release
+        ///   with `end(_:)`. False means the URL is not security-scoped at all —
+        ///   a plain file URL — and needs no scope.
+        func begin(_ url: URL) -> Bool {
+            let key = ScopeRegistry.key(for: url)
+            lock.lock()
+            defer { lock.unlock() }
+
+            if let entry = open[key], entry.count > 0 {
+                open[key] = (entry.url, entry.count + 1)
+                return true
+            }
+            guard url.startAccessingSecurityScopedResource() else { return false }
+            open[key] = (url, 1)
+            return true
+        }
+
+        /// Releases one claim, stopping the scope when it was the last one.
+        ///
+        /// A key nobody holds is ignored: an unbalanced stop is the failure this
+        /// type exists to prevent, so it does not perform one.
+        func end(_ url: URL) {
+            let key = ScopeRegistry.key(for: url)
+            lock.lock()
+            defer { lock.unlock() }
+
+            guard let entry = open[key], entry.count > 0 else { return }
+            if entry.count > 1 {
+                open[key] = (entry.url, entry.count - 1)
+                return
+            }
+            open[key] = nil
+            entry.url.stopAccessingSecurityScopedResource()
+        }
+
+        private static func key(for url: URL) -> String {
+            url.standardizedFileURL.path(percentEncoded: false)
         }
     }
 

@@ -90,7 +90,17 @@ public actor DocumentStore: DocumentStoring {
     /// One round trip by design: cold launch to a readable page has a
     /// one-second budget (docs/03-architecture.md § Performance targets).
     public func detail(id: UUID) throws -> DocumentDetail? {
-        try documentRow(id: id)?.detail()
+        guard let row = try documentRow(id: id) else { return nil }
+        var detail = row.detail()
+
+        // `DocumentDetail.externalId` is what `review.json`'s `documentId`
+        // must carry — the id the sending tool wrote into `meta.json` — and
+        // the review sheet had no other route to it, so every review sent
+        // carried our own UUID instead. Set here rather than inside
+        // `Document.detail()` only because another agent owns that file this
+        // wave; fold it in there next time it is open (Wave 3 report).
+        detail.externalId = row.externalId
+        return detail
     }
 
     /// Folder names already in the library, for the scanner's skip set.
@@ -114,6 +124,11 @@ public actor DocumentStore: DocumentStoring {
     /// carries a different one, because comments point at it — use
     /// `documentId(forFolderName:)` after a re-ingest rather than assuming the
     /// id you passed in.
+    ///
+    /// The `folderName` goes the other way. When the row is matched by id — the
+    /// same document re-sent under a new `YYYY-MM-DD-` prefix — the row takes
+    /// the **new** folder name, because that is the directory the document is
+    /// in now and the one a reply will come back under.
     @discardableResult
     public func upsert(_ document: IngestedDocument) throws -> DocumentSummary {
         var existing = try documentRow(folderName: document.folderName)
@@ -156,13 +171,30 @@ public actor DocumentStore: DocumentStoring {
 
     /// Records that a folder could not be ingested.
     ///
-    /// Creates a placeholder row when the folder is unknown, so the Library can
-    /// show an error row rather than nothing at all (docs/04-flows.md § F1). The
-    /// row has no pinned bytes and `localState == .unavailable`, which is what
-    /// stops it being tappable (docs/02-spec.md § S1).
+    /// Three cases, and the difference between the last two is the whole point:
+    ///
+    /// - **The folder is unknown.** A placeholder row is inserted so the Library
+    ///   can show an error row rather than nothing at all (docs/04-flows.md
+    ///   § F1). It has no pinned bytes and `localState == .unavailable`, which
+    ///   is what stops it being tappable (docs/02-spec.md § S1).
+    /// - **The row exists and has no pinned bytes.** It was a placeholder
+    ///   already; the reason is refreshed and it stays unavailable.
+    /// - **The row exists and its pinned bytes are still on disk.** The reason
+    ///   is recorded as a *refresh* failure and `localState` is left alone, so
+    ///   the row stays readable. A pin that fails leaves the previous copy in
+    ///   place (`InboxItemPinner.swap(staging:into:)`), so those bytes are
+    ///   exactly the ones the user read yesterday, and "losing the folder costs
+    ///   you new documents, never existing ones" (docs/02-spec.md
+    ///   § Cross-cutting) has to hold for a provider hiccup too.
+    ///
+    /// A subsequent successful `upsert(_:)` clears the note.
     public func recordIngestFailure(folderName: String, reason: String) throws {
         if let existing = try documentRow(folderName: folderName) {
-            existing.localState = .unavailable(reason: reason)
+            existing.refreshFailureReason = reason
+            existing.refreshFailedAt = Date()
+            if existing.hasPinnedBytes == false {
+                existing.localState = .unavailable(reason: reason)
+            }
             try commit()
             return
         }
@@ -180,10 +212,24 @@ public actor DocumentStore: DocumentStoring {
             createdAt: now,
             addedAt: now,
             localStateRaw: Document.localStateUnavailable,
-            localStateReason: reason
+            localStateReason: reason,
+            refreshFailureReason: reason,
+            refreshFailedAt: now
         )
         modelContext.insert(row)
         try commit()
+    }
+
+    /// Why the last attempt to ingest a folder failed, or nil when the last one
+    /// succeeded or the folder is unknown.
+    ///
+    /// Internal to Storage for now: a row that is readable *and* carries a
+    /// "couldn't refresh" note has nowhere to say so in `DocumentSummary`, and
+    /// adding a field there is a `Core/Contracts` change request rather than a
+    /// local edit (STYLE.md § 1). Until that lands the live surfacing is
+    /// `SyncEvent.ingestFailed`, and this is what the tests read.
+    func refreshFailure(forFolderName folderName: String) throws -> String? {
+        try documentRow(folderName: folderName)?.refreshFailureReason
     }
 
     // MARK: - Reading state
@@ -449,6 +495,24 @@ public actor DocumentStore: DocumentStoring {
         try commit()
     }
 
+    /// Where this document's review has got to (docs/04-flows.md §§ F5-F6).
+    ///
+    /// The read half of `recordReviewSent` and `recordReply`, which had none —
+    /// so a reply that arrived after the review sheet closed was stored here
+    /// and could never be shown. Every field is nil for a document that has
+    /// never been reviewed, which is a status rather than an absence; nil is
+    /// returned only when there is no such document.
+    public func reviewStatus(documentId: UUID) throws -> ReviewStatus? {
+        guard let row = try documentRow(id: documentId) else { return nil }
+        return ReviewStatus(
+            documentId: row.id,
+            sentAt: row.reviewSentAt,
+            directoryName: row.reviewDirectoryName,
+            replyText: row.replyText,
+            replyReceivedAt: row.replyReceivedAt
+        )
+    }
+
     // MARK: - Housekeeping
 
     /// Bytes on disk for the Settings storage row.
@@ -583,6 +647,19 @@ public actor DocumentStore: DocumentStoring {
     private func apply(_ document: IngestedDocument, to row: Document) {
         row.externalId = document.externalId
         row.title = document.title
+        // The folder name moves with the document. A row matched by `id` rather
+        // than by `folderName` is the ordinary "same plan, sent again tomorrow"
+        // case: the same `meta.json` id under a new `YYYY-MM-DD-` prefix. Leave
+        // the old name here and the row claims a folder that no longer holds
+        // it — `knownFolderNames()` never returns the new one, so the scanner
+        // treats it as new for ever, and `documentId(forFolderName:)` cannot
+        // match a `reply.md` written into `<new folder>.review` back to it
+        // (SyncCoordinator.collectReplies).
+        //
+        // Safe against the `@Attribute(.unique)` on `folderName`: `upsert`
+        // looks a row up by folder name first, so reaching this line with a
+        // different name means no row holds it.
+        row.folderName = document.folderName
         row.relativePath = document.relativePath
         row.pdfPath = StorageLocations.storedPath(for: document.pdfURL)
         row.sourceMarkdownPath = document.sourceMarkdownURL.map { StorageLocations.storedPath(for: $0) }
@@ -594,6 +671,10 @@ public actor DocumentStore: DocumentStoring {
         row.createdAt = document.createdAt
         row.addedAt = document.addedAt
         row.localState = .local
+        // The bytes arrived, so whatever the last refresh complained about is
+        // history (`recordIngestFailure(folderName:reason:)`).
+        row.refreshFailureReason = nil
+        row.refreshFailedAt = nil
         let highest = max(0, document.pageCount - 1)
         if row.lastReadPage > highest {
             row.lastReadPage = highest

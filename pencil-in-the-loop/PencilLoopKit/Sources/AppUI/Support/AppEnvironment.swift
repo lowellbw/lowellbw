@@ -9,29 +9,30 @@
 //  constructs a store, a transcriber or a bundle builder, and no view takes six
 //  initialiser parameters that three call sites have to keep in step.
 //
-//  ─── FOR WAVE 2 (UI UNITS) ───────────────────────────────────────────────────
-//  Inject it once at the root and read it from the SwiftUI environment:
+//  ─── HOW IT IS PASSED ────────────────────────────────────────────────────────
+//  Through `init`, not through the SwiftUI environment. The header here used to
+//  show a `\.appEnvironment` EnvironmentKey; no unit declared one and all four
+//  injected the environment explicitly instead, so the key is gone rather than
+//  half-present. Explicit injection is also what makes every screen previewable
+//  without a host: a view that reads a key can be handed the wrong one, and a
+//  view with a parameter cannot be built at all without it.
 //
 //      @main struct PencilLoopApp: App {
-//          let environment: any AppEnvironment = LiveEnvironment()
+//          @State private var root = RootModel()
 //          var body: some Scene {
-//              WindowGroup { RootView().environment(\.appEnvironment, environment) }
+//              WindowGroup { RootView(model: root) }
 //          }
 //      }
 //
 //  and in a preview:
 //
-//      #Preview { LibraryView().environment(\.appEnvironment, PreviewEnvironment()) }
+//      #Preview { LibraryView(environment: PreviewEnvironment()) { … } }
 //
+//  `LiveEnvironment` (AppUI/Support) is the real one, built once at launch.
 //  `PreviewEnvironment` below conforms with inert stubs, so every screen can be
-//  previewed today, before a single real implementation exists. The stubs return
-//  empty values and do nothing; they never fail, never block and never touch the
-//  filesystem.
-//
-//  The `EnvironmentKey` and `EnvironmentValues` extension are deliberately NOT
-//  here — they need SwiftUI, and this file imports Foundation only so that it
-//  can be read and reasoned about without one. Wave 2's shell unit adds them in
-//  its own file.
+//  previewed on a Mac with no device, no folder and no microphone. The stubs
+//  return empty values and do nothing; they never fail, never block and never
+//  touch the filesystem.
 //  ─────────────────────────────────────────────────────────────────────────────
 //
 //  NOTE ON `nonisolated`: the AppUI target is compiled with
@@ -84,6 +85,37 @@ public protocol AppEnvironment: Sendable {
 
     /// Persisted user settings (docs/02-spec.md § S6).
     var settings: any SettingsStoring { get }
+
+    /// Security-scoped access to the user's sync folder.
+    ///
+    /// Here because two screens need `prepareFolder(at:)` and there was no
+    /// route to it: first run (docs/02-spec.md § S0) *is* the folder picker,
+    /// and Settings § S6 changes it. Both took it as an extra initialiser
+    /// parameter as a stopgap, which meant three views with two dependencies
+    /// each and three call sites to keep in step.
+    ///
+    /// Everything else the folder is needed for — scanning, pinning, writing —
+    /// belongs to `sync`, which holds its own access. A view should reach for
+    /// this only to adopt a folder the user has just picked, and
+    /// `SyncFolderChoice.adopt(_:folderAccess:settings:)` is the one place that
+    /// happens.
+    var folderAccess: any FolderAccessing { get }
+
+    /// Point the app's sync loop at a folder the user has just chosen, and
+    /// start it.
+    ///
+    /// The other half of `SyncFolderChoice.adopt(_:folderAccess:settings:)`:
+    /// that persists the bookmark, this is what makes documents start arriving.
+    /// Both first run (§ S0) and Settings (§ S6) call it, because a folder
+    /// chosen in Settings that only takes effect after a relaunch is a folder
+    /// the user will assume did not work.
+    ///
+    /// **On failure:** nothing to report. Attaching cannot fail — a folder that
+    /// turns out to be unreachable surfaces as `SyncEvent.folderUnavailable` in
+    /// the library's status line, which is where a folder problem belongs.
+    /// Idempotent: adopting the same folder twice replaces the first
+    /// coordinator rather than running two.
+    func adoptFolder(_ folder: SyncFolder) async
 }
 
 /// An `AppEnvironment` whose every dependency does nothing.
@@ -104,6 +136,7 @@ public struct PreviewEnvironment: AppEnvironment {
     public let bundleBuilder: any ReviewBundleBuilding
     public let returnPathResolver: any ReturnPathResolving
     public let settings: any SettingsStoring
+    public let folderAccess: any FolderAccessing
 
     /// - Parameters:
     ///   - summaries: rows the previewed library shows.
@@ -124,7 +157,12 @@ public struct PreviewEnvironment: AppEnvironment {
         self.bundleBuilder = PreviewReviewBundleBuilder()
         self.returnPathResolver = PreviewReturnPathResolver()
         self.settings = PreviewSettingsStore(settings: settings)
+        self.folderAccess = PreviewFolderAccess()
     }
+
+    /// Nothing to attach: a preview's folder is imaginary and its sync
+    /// coordinator never finds anything.
+    public func adoptFolder(_ folder: SyncFolder) async {}
 }
 
 // MARK: - Inert stubs
@@ -230,6 +268,14 @@ public actor PreviewDocumentStore: DocumentStoring {
 
     public func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {}
 
+    /// A preview has never sent a review, so every field is nil — which is the
+    /// state the review sheet spends most of its life in and the one worth
+    /// previewing. Seed `detail` and drive the sent screen from
+    /// `ReviewPreviewData` for the other one.
+    public func reviewStatus(documentId: UUID) throws -> ReviewStatus? {
+        ReviewStatus(documentId: documentId)
+    }
+
     public func addReadingSeconds(_ seconds: TimeInterval, documentId: UUID) throws {}
 
     public func readingSeconds(documentId: UUID) throws -> TimeInterval { 0 }
@@ -293,6 +339,11 @@ public struct PreviewSpeechTranscriber: SpeechTranscribing {
     }
 
     public nonisolated func stop() async -> String { "" }
+
+    /// Empty: the documented "this engine cannot say" answer, which is what
+    /// makes the Settings picker fall back to the selected language alone. A
+    /// preview that wants a full picker has no engine to ask.
+    public nonisolated func supportedLocales() async -> [Locale] { [] }
 }
 
 /// A recogniser that always declines, which is a state the UI must handle

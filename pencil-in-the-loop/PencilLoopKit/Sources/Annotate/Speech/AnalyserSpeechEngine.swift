@@ -96,6 +96,22 @@ public actor AnalyserSpeechEngine: SpeechTranscribing {
         return supported.contains { matches($0, locale) }
     }
 
+    /// Every language `SpeechTranscriber` knows, installed or not.
+    ///
+    /// The Settings picker's list (docs/02-spec.md § S6). Sorted by the name
+    /// the user would read rather than by identifier, because that is the order
+    /// the picker shows them in.
+    ///
+    /// - Returns: an empty array if the system will not say, which the caller
+    ///   treats as "offer the current language only" rather than as an error.
+    public func supportedLocales() async -> [Locale] {
+        let supported = await SpeechTranscriber.supportedLocales
+        return supported.sorted {
+            SpeechAvailability.displayName(for: $0)
+                .localizedCaseInsensitiveCompare(SpeechAvailability.displayName(for: $1)) == .orderedAscending
+        }
+    }
+
     static func isInstalled(_ locale: Locale) async -> Bool {
         let installed = await SpeechTranscriber.installedLocales
         return installed.contains { matches($0, locale) }

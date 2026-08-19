@@ -62,6 +62,15 @@ public actor SyncCoordinator: SyncCoordinating {
     private var listeners: [UUID: AsyncStream<SyncEvent>.Continuation] = [:]
     private var deliveredReplies: Set<String> = []
 
+    /// Folder name to the modification date at which its ingest last failed.
+    ///
+    /// A folder in here is left alone by background scans until it changes on
+    /// disk or the user pulls to refresh, which is what `refresh()` clears. It
+    /// is the *only* thing that defers a retry: the scanner is told about
+    /// folders that succeeded, never about folders that failed, so a failure
+    /// that is not deferred here comes back on the very next scan.
+    private var deferredFailures: [String: Date] = [:]
+
     /// - Parameters:
     ///   - folder: the sync root, already prepared by `FolderAccessing`.
     ///   - store: the library.
@@ -121,21 +130,35 @@ public actor SyncCoordinator: SyncCoordinating {
     }
 
     /// Stops watching. The library stays fully usable afterwards.
+    ///
+    /// A scan in flight is cancelled too, and stops between documents rather
+    /// than part-way through one: whatever it had already ingested stays
+    /// ingested, and everything it had not reached is left unhandled, so the
+    /// next `start()` picks it up.
     public func stop() async {
         watchTask?.cancel()
         watchTask = nil
+        activeScan?.cancel()
         await watcher.stop()
         isStarted = false
     }
 
     /// A full re-scan, as pull-to-refresh triggers.
     ///
+    /// **Genuinely full.** The scanner's memory of what it has handled is
+    /// dropped first, and so is every folder deferred after a failed ingest, so
+    /// this looks at every directory in `inbox/` again. That is what the gesture
+    /// means, and it is the retry that `InboxItemPinner`'s "it will be retried
+    /// on the next refresh" promises the user. Folders that are already pinned
+    /// and current cost one sidecar read each and are not re-ingested.
+    ///
     /// - Returns: how many documents were newly ingested. Zero is a normal,
     ///   successful answer.
     /// - Throws: `.folderUnavailable` when the root cannot be read. Everything
     ///   else is reported per document through `events()`.
     public func refresh() async throws -> Int {
-        try await performScan()
+        await forgetScanMemory()
+        return try await performScan()
     }
 
     /// The event stream for the UI. Multiple consumers each get their own
@@ -184,7 +207,11 @@ public actor SyncCoordinator: SyncCoordinating {
                 directoryName: payload.directoryName,
                 writtenAt: Date(),
                 fileCount: payload.files.count,
-                byteCount: payload.files.reduce(0) { $0 + Int64($1.data.count) }
+                byteCount: payload.files.reduce(0) { $0 + Int64($1.data.count) },
+                // This is the queue, not `outbox/`. Saying so here is what lets
+                // the Sent screen show "will send when online" without racing
+                // `events()` for the answer (DTOs.swift, `WrittenReview`).
+                isQueued: true
             )
         }
     }
@@ -274,6 +301,11 @@ public actor SyncCoordinator: SyncCoordinating {
         }
         try? access.ensureDirectories(in: folder)
 
+        // Hidden `.tmp` siblings left in the user's inbox by a process that died
+        // between staging and rename. Nothing else removes them — every scan
+        // here skips hidden entries — and they are in somebody else's folder.
+        StagingSweeper.sweep(in: folder.inboxURL)
+
         if importsAppGroupStaging {
             stagingImporter.importAll(into: folder)
         }
@@ -294,9 +326,28 @@ public actor SyncCoordinator: SyncCoordinating {
 
         var ingestedCount = 0
         for item in scan.items {
+            // `stop()` cancels this task. The scan gives up between documents,
+            // never part-way through one.
             if Task.isCancelled { break }
-            if known.contains(item.folderName), pinner.isPinnedAndCurrent(item) { continue }
-            if await ingest(item) { ingestedCount += 1 }
+
+            if known.contains(item.folderName), pinner.isPinnedAndCurrent(item) {
+                // Nothing to do for this revision, which is exactly what the
+                // scanner needs to know so it can stop reporting it.
+                await markHandled(item)
+                continue
+            }
+            if let failedAt = deferredFailures[item.folderName], failedAt >= item.modifiedAt {
+                // This revision has already failed once. It comes back when the
+                // folder changes on disk or when the user pulls to refresh,
+                // rather than being re-downloaded every fifteen seconds.
+                continue
+            }
+            if await ingest(item) {
+                ingestedCount += 1
+                await markHandled(item)
+            } else if Task.isCancelled == false {
+                deferredFailures[item.folderName] = item.modifiedAt
+            }
         }
         emit(.scanFinished(ingestedCount: ingestedCount))
 
@@ -307,8 +358,11 @@ public actor SyncCoordinator: SyncCoordinating {
     /// One directory, all the way to a library row.
     ///
     /// Every failure lands on the same path: recorded against the folder name
-    /// so the library can show an error row, and reported as `.ingestFailed`.
-    /// The folder is never deleted and never silently skipped.
+    /// so the library can show it, and reported as `.ingestFailed`. The folder
+    /// is never deleted and never silently skipped, and a document that was
+    /// already readable stays readable — recording the failure does not take a
+    /// document's pinned bytes away
+    /// (`DocumentStoring.recordIngestFailure(folderName:reason:)`).
     private func ingest(_ item: InboxItem) async -> Bool {
         do {
             let pinned = try await pinner.pin(item)
@@ -317,6 +371,21 @@ public actor SyncCoordinator: SyncCoordinating {
             emit(.ingested(documentId: summary.id, title: summary.title))
             return true
         } catch {
+            if Task.isCancelled {
+                // The scan was stopped, which says nothing about the document.
+                // Recording a failure here would put an error against a folder
+                // that was merely interrupted.
+                SyncLog.coordinator.notice("Ingest of \(item.folderName) stopped with the scan.")
+                return false
+            }
+            // If the pin got as far as writing a copy, the library does not
+            // reflect it, so the copy must not be trusted as current — or the
+            // `isPinnedAndCurrent` shortcut above would skip this folder on
+            // every later scan and it would never reach the library at all.
+            // Only the sidecar goes; the bytes stay, so anything already
+            // readable stays readable.
+            pinner.invalidateSnapshot(forFolderNamed: item.folderName)
+
             let reason = SyncCoordinator.message(for: error)
             SyncLog.coordinator.error("Ingest failed for \(item.folderName): \(reason)")
             try? await store.recordIngestFailure(folderName: item.folderName, reason: reason)
@@ -408,11 +477,27 @@ public actor SyncCoordinator: SyncCoordinating {
     }
 
     /// After the folder has been away, anything could have changed while we
-    /// were not looking, so the scanner's memory of what it last saw is thrown
-    /// out and every folder is examined again.
+    /// were not looking, so the scanner's memory of what it has handled is
+    /// thrown out and every folder is examined again. `refresh()` does the same
+    /// on the user's behalf.
     private func forgetScanMemory() async {
+        deferredFailures.removeAll()
         guard let concrete = scanner as? InboxScanner else { return }
         await concrete.forgetSeenFolders()
+    }
+
+    /// Tells the scanner that a folder needs no further attention until it
+    /// changes on disk.
+    ///
+    /// Called only after an ingest succeeded, or for a folder found already
+    /// pinned and current. A folder that failed is deliberately left unmarked,
+    /// so the next scan reports it again — the retry the user is promised.
+    ///
+    /// A scanner this coordinator did not build has no such memory to update,
+    /// and rescanning a handled folder costs one sidecar read.
+    private func markHandled(_ item: InboxItem) async {
+        guard let concrete = scanner as? InboxScanner else { return }
+        await concrete.markHandled(item)
     }
 
     // MARK: - Events

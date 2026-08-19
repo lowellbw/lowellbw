@@ -102,7 +102,9 @@ public enum CoordinatedFileAccess {
     /// `.forReplacing` on the destination — and brackets `body` with the
     /// `item(at:willMoveTo:)` / `item(at:didMoveTo:)` pair, which is what tells
     /// other presenters that this is one rename rather than a delete and a
-    /// create.
+    /// create. When `body` throws, the pair is closed the other way round — the
+    /// item is announced as having moved back to the source, because it never
+    /// left — so no presenter is left believing in a move that did not happen.
     ///
     /// - Parameters:
     ///   - source: the staging directory.
@@ -130,6 +132,12 @@ public enum CoordinatedFileAccess {
                 try body(movableSource, replaceableDestination)
                 coordinator.item(at: movableSource, didMoveTo: replaceableDestination)
             } catch {
+                // The move did not happen, and every other presenter has already
+                // been told it was about to. Announcing the reverse puts them
+                // back where the filesystem actually is — the item is still at
+                // the source — rather than leaving them believing in a
+                // destination that was never written.
+                coordinator.item(at: replaceableDestination, didMoveTo: movableSource)
                 thrown = error
             }
         }

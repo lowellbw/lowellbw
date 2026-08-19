@@ -56,14 +56,18 @@ public struct OutboxQueue: Sendable {
     }
 
     /// `Application Support/PencilLoop/outbox-queue`.
+    ///
+    /// The container part comes from `DocumentContainer` rather than being
+    /// spelled again here: three modules once invented three layouts, and a
+    /// queue root that spells its own would strand queued-but-unsent reviews
+    /// silently the day the container name changes (STYLE.md § 9).
     public static func defaultRootURL() -> URL {
-        let manager = FileManager.default
-        let support = manager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
-        let base = support ?? manager.temporaryDirectory
-        return base
-            .appendingPathComponent("PencilLoop", isDirectory: true)
-            .appendingPathComponent("outbox-queue", isDirectory: true)
+        DocumentContainer.containerRoot()
+            .appendingPathComponent(queueDirectoryName, isDirectory: true)
     }
+
+    /// The queue's directory inside the app container.
+    public static let queueDirectoryName = "outbox-queue"
 
     /// The sidecar's file name.
     public static let ticketFileName = ".queued.json"
@@ -81,6 +85,11 @@ public struct OutboxQueue: Sendable {
             SyncFileNames.stagingName(for: payload.directoryName, token: UUID().uuidString),
             isDirectory: true
         )
+        // Anything a previous process left half-written here is debris nothing
+        // else removes: `queuedPayloads()` skips hidden entries, so it would sit
+        // in the app container for ever.
+        StagingSweeper.sweep(in: rootURL)
+
         do {
             try manager.createDirectory(at: staging, withIntermediateDirectories: true)
             for file in OutboxWriter.writeOrder(for: payload.files) {

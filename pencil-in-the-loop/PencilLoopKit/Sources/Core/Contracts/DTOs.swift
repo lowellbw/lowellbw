@@ -162,6 +162,18 @@ public struct DocumentDetail: Sendable, Hashable, Identifiable {
     public var title: String
     public var folderName: String
 
+    /// The raw `meta.json` id, kept verbatim for tools that wrote a non-UUID.
+    ///
+    /// Carried through to `ReviewDraft.externalDocumentId` and out to
+    /// `review.json`'s `documentId`, which exists precisely to be the id the
+    /// sending tool used. `IngestedDocument.externalId` and the stored row both
+    /// had it and the reader's view of a document did not, so every review sent
+    /// carried our UUID instead — the one thing that field must not be.
+    ///
+    /// Nil when `meta.json` carried no id, or carried one that was already a
+    /// UUID and therefore became `id`.
+    public var externalId: String?
+
     /// The pinned copy inside the app container. Never a file-provider URL —
     /// see CLAUDE.md non-negotiable 2.
     ///
@@ -198,6 +210,7 @@ public struct DocumentDetail: Sendable, Hashable, Identifiable {
         id: UUID,
         title: String,
         folderName: String,
+        externalId: String? = nil,
         pdfURL: URL?,
         sourceMarkdownURL: URL? = nil,
         sourceMap: SourceMap? = nil,
@@ -213,6 +226,7 @@ public struct DocumentDetail: Sendable, Hashable, Identifiable {
         self.id = id
         self.title = title
         self.folderName = folderName
+        self.externalId = externalId
         self.pdfURL = pdfURL
         self.sourceMarkdownURL = sourceMarkdownURL
         self.sourceMap = sourceMap
@@ -224,6 +238,60 @@ public struct DocumentDetail: Sendable, Hashable, Identifiable {
         self.extractedText = extractedText
         self.pages = pages
         self.comments = comments
+    }
+}
+
+/// Where a document's review has got to, as the store knows it.
+///
+/// The read half of the review lifecycle: `recordReviewSent`, then
+/// `recordReply`, then this (Protocols.swift § DocumentStoring). Every field is
+/// optional because every one of them describes something that may not have
+/// happened yet, and "not yet" is the normal state.
+///
+/// It is what makes a reply survive the sheet being closed. The `SyncEvent`
+/// stream only reaches a screen that is on screen, and an agent replies in
+/// minutes; without a stored read, the reply loop worked only for a user who
+/// sat and waited.
+public struct ReviewStatus: Sendable, Hashable {
+
+    public var documentId: UUID
+
+    /// When the user pressed Send. Nil when no review has been sent.
+    public var sentAt: Date?
+
+    /// `<folderName>.review` under `outbox/`, the handle
+    /// `SyncCoordinating.ingestReply(fromReviewDirectory:)` takes. Nil when no
+    /// review has been sent.
+    public var directoryName: String?
+
+    /// The agent's `reply.md`, verbatim (docs/04-flows.md § F6). Nil when no
+    /// reply has arrived — which is most of the time, and is not a failure.
+    public var replyText: String?
+
+    /// When the reply was seen in the folder. Nil while `replyText` is.
+    public var replyReceivedAt: Date?
+
+    public init(
+        documentId: UUID,
+        sentAt: Date? = nil,
+        directoryName: String? = nil,
+        replyText: String? = nil,
+        replyReceivedAt: Date? = nil
+    ) {
+        self.documentId = documentId
+        self.sentAt = sentAt
+        self.directoryName = directoryName
+        self.replyText = replyText
+        self.replyReceivedAt = replyReceivedAt
+    }
+
+    /// True once a review has been sent for this document.
+    public var hasBeenSent: Bool { sentAt != nil }
+
+    /// True once an agent has written back.
+    public var hasReply: Bool {
+        guard let replyText else { return false }
+        return replyText.isEmpty == false
     }
 }
 
@@ -974,13 +1042,27 @@ public struct WrittenReview: Sendable, Hashable {
     /// Total bytes written, for the Sent screen's progress line.
     public var byteCount: Int64
 
+    /// True when the folder was unreachable and the bundle went to the local
+    /// queue instead of `outbox/` (docs/04-flows.md § F7).
+    ///
+    /// `directoryURL` then points inside the app container, not at the sync
+    /// folder, and the Sent screen says "will send when online" rather than
+    /// "sent". The two outcomes used to be indistinguishable in this value, so
+    /// the UI raced `SyncCoordinating.events()` to work out which had happened
+    /// — a race whose losing side is a screen claiming a review was delivered
+    /// when it is sitting in a queue. The event stream still reports the
+    /// *later* write when the folder comes back; this reports what happened
+    /// just now.
+    public var isQueued: Bool
+
     public init(
         documentId: UUID,
         directoryURL: URL,
         directoryName: String,
         writtenAt: Date,
         fileCount: Int,
-        byteCount: Int64
+        byteCount: Int64,
+        isQueued: Bool = false
     ) {
         self.documentId = documentId
         self.directoryURL = directoryURL
@@ -988,6 +1070,7 @@ public struct WrittenReview: Sendable, Hashable {
         self.writtenAt = writtenAt
         self.fileCount = fileCount
         self.byteCount = byteCount
+        self.isQueued = isQueued
     }
 }
 

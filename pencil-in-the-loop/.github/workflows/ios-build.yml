@@ -38,18 +38,14 @@ jobs:
         working-directory: PencilLoopKit
         run: swift package resolve
 
-      # A host build of the package. It compiles the modules with no project
-      # file, no signing and no simulator involved, so a failure here is
-      # unambiguously a problem in PencilLoopKit rather than in the app targets.
-      #
-      # This step stops being valid the moment AppUI or Annotate imports UIKit,
-      # PencilKit or SwiftData for real — those do not build for macOS. Delete
-      # this step then; the iOS build below covers the same ground.
-      - name: Build PencilLoopKit for the host
-        working-directory: PencilLoopKit
-        run: swift build
+      # There is deliberately no host `swift build` step any more. It was the
+      # fastest signal while the package was pure Foundation, and it stopped
+      # being valid the moment AppUI and Annotate imported UIKit and PencilKit —
+      # those do not build for macOS, so the step failed on `no such module`
+      # rather than on anything real. The iOS build below covers the same
+      # ground.
 
-      # The same package, built for iOS. Xcode synthesises a scheme for a package
+      # The package, built for iOS. Xcode synthesises a scheme for a package
       # directory, so this needs no project file either.
       - name: Build PencilLoopKit for iOS
         working-directory: PencilLoopKit
@@ -69,9 +65,22 @@ jobs:
             -destination 'generic/platform=iOS' \
             CODE_SIGNING_ALLOWED=NO
 
-      - name: Run package tests
+      # Tests run on a simulator for the same reason: `swift test` builds for
+      # the host, and AnnotateTests and AppUITests link PencilKit and UIKit.
+      #
+      # The device name is the one thing here that goes stale — if the runner
+      # image has no iPad by that name the step fails with "Unable to find a
+      # destination". `xcrun simctl list devices available` prints what it does
+      # have; put one of those here.
+      - name: Run package tests (Simulator)
         working-directory: PencilLoopKit
-        run: swift test
+        run: |
+          xcodebuild test \
+            -scheme PencilLoopKit \
+            -destination "platform=iOS Simulator,name=$SIMULATOR" \
+            CODE_SIGNING_ALLOWED=NO
+        env:
+          SIMULATOR: iPad Pro 13-inch (M4)
 
   check:
     name: Project checks (Linux)

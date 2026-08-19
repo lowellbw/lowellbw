@@ -33,16 +33,22 @@ actor FakeSpeechEngine: SpeechTranscribing {
         /// Walked one entry at a time by `advanceAssetState()`.
         var states: [SpeechAssetState]
 
+        /// What `supportedLocales()` reports. Empty is the documented "this
+        /// engine cannot say" answer, so it is the default.
+        var supportedLocales: [Locale]
+
         init(
             updates: [TranscriptionUpdate] = [],
             finalText: String = "",
             failure: PencilLoopError? = nil,
-            states: [SpeechAssetState] = [.ready]
+            states: [SpeechAssetState] = [.ready],
+            supportedLocales: [Locale] = []
         ) {
             self.updates = updates
             self.finalText = finalText
             self.failure = failure
             self.states = states
+            self.supportedLocales = supportedLocales
         }
     }
 
@@ -85,6 +91,12 @@ actor FakeSpeechEngine: SpeechTranscribing {
         AsyncThrowingStream { continuation in
             Task { await self.begin(contextualTerms: contextualTerms, continuation: continuation) }
         }
+    }
+
+    /// Whatever the script says, so a test can drive the Settings picker
+    /// without a device. Empty by default — the "engine cannot say" case.
+    func supportedLocales() async -> [Locale] {
+        script.supportedLocales
     }
 
     func stop() async -> String {

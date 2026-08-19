@@ -47,9 +47,20 @@ comment saves, nothing else. No animation that isn't a system transition. No sou
 labels on every control. The document itself is a PDF and doesn't reflow — that's the
 accepted trade for stable ink — but the comment list, library and review sheet all must.
 
-**9. Dark mode by page tint, not by inversion.** Follow Books: offer White, Sepia, Gray,
-Night as page tints. Never invert a PDF's colours; render the page and tint it. App
-chrome follows the system appearance normally.
+**9. Dark mode by page tint, not by inversion.** Offer White, Cream, Sepia and Grey as
+page tints. Never invert a PDF's colours; render the page and tint it. App chrome follows
+the system appearance normally.
+
+*This rule used to ask for Books' four — White, Sepia, Gray, Night — and Night is the one
+that cannot be had under the rest of the rule.* The wash is a multiply-blended rectangle
+over the rendered page (`ReaderTintWash`); multiply can only darken, so a wash dark enough
+to make a night page takes the black text down with it and leaves black on charcoal. Every
+other route — inverting the raster, a `difference` or `exclusion` blend, `colorInvert()` —
+is inversion by another name, and inversion is what this rule exists to forbid: it turns
+figures into negatives, recolours syntax-highlighted code into a scheme nobody chose, and
+makes graphite ink invisible on the page it was drawn on. Cream took its place in the
+picker. A real Night needs the app to composite the page itself rather than letting PDFKit
+draw it — see `docs/11-backlog.md` § B11.
 
 **10. Fast beats pretty.** A page must be on screen in under 100ms from tap. Ink must
 never drop a frame. If a nicety costs latency, cut the nicety.

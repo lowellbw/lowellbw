@@ -2,22 +2,25 @@
 //  ReaderMarkerLayer.swift
 //  AppUI · Reader
 //
-//  Where the comment markers go on screen. The dots, their clustering, the tap
-//  target and the popover a tap opens are all the comment unit's
-//  (`CommentMarkerLayer`, which asks for one page's frame at a time); what the
-//  reader adds is the only thing it has and they do not — where each page
-//  currently is.
+//  The reader's one line of marker code: which pages are on screen, and when
+//  they last moved. Everything else about markers — where each dot goes down the
+//  margin, what a cluster is, the tap target, the popover a tap opens — belongs
+//  to the comment unit and is reached through `CommentMarkersOverlay`.
 //
-//  It redraws on `ReaderModel.geometryRevision`, which the coordinator ticks
-//  while the pages are moving and stops ticking as soon as they settle. Reading
-//  that property here, and nowhere else in the reader, is what keeps a scroll
-//  from re-evaluating the toolbar, the tint and the document view along with the
-//  markers.
+//  ─── WHY THIS FILE STILL EXISTS ──────────────────────────────────────────────
+//  It used to walk the visible pages itself and build one `CommentMarkerLayer`
+//  per page, which is exactly what `CommentMarkersOverlay` does — the same loop,
+//  written twice, from the same two inputs. That copy is gone.
+//
+//  What is left is the one thing that cannot move into the comment unit: reading
+//  `ReaderModel.geometryRevision`. Reading it *here*, in a view whose whole body
+//  is the marker layer, is what subscribes this view — and only this view — to
+//  scrolling. Passing it in from `ReaderView.body` instead would re-evaluate the
+//  toolbar, the tint and the document view on every frame of every flick.
+//  ─────────────────────────────────────────────────────────────────────────────
 //
 
-import CoreGraphics
 import SwiftUI
-import Core
 
 /// The comment markers for every page currently on screen.
 ///
@@ -31,38 +34,18 @@ struct ReaderMarkerLayer: View {
     let model: ReaderModel
 
     var body: some View {
-        ZStack(alignment: .topLeading) {
-            if let capture = self.model.capture {
-                ForEach(self.visiblePages, id: \.index) { page in
-                    CommentMarkerLayer(
-                        model: capture,
-                        pageIndex: page.index,
-                        pageRect: page.rect
-                    )
-                }
-            }
-        }
-    }
-
-    /// One page on screen.
-    private struct PageFrame {
-        let index: Int
-        let rect: CGRect
-    }
-
-    /// Every visible page and its frame, in the coordinate space this layer
-    /// shares with the PDF view.
-    private var visiblePages: [PageFrame] {
         // Reading the revision is the subscription: without it this layer would
         // be laid out once and then sit still while the page scrolled out from
         // under it.
-        _ = self.model.geometryRevision
+        let version = self.model.geometryRevision
 
-        guard let capture = self.model.capture, !capture.comments.isEmpty else { return [] }
-        let resolver = self.model.pageResolver
-        return resolver.visiblePageIndices().compactMap { index in
-            guard let rect = resolver.viewRect(forPageIndex: index) else { return nil }
-            return PageFrame(index: index, rect: rect)
+        if let capture = self.model.capture, capture.comments.isEmpty == false {
+            CommentMarkersOverlay(
+                model: capture,
+                resolver: self.model.pageResolver,
+                pageIndices: self.model.pageResolver.visiblePageIndices(),
+                geometryVersion: version
+            )
         }
     }
 }

@@ -74,6 +74,16 @@ final class ReviewSheetModel {
     /// True while `SyncCoordinating.ingestReply(fromReviewDirectory:)` runs.
     var isOpeningReply: Bool
 
+    /// What the store knows about a review sent for this document *before* this
+    /// sheet was opened, including a reply that arrived while nothing was on
+    /// screen (Protocols.swift § DocumentStoring.reviewStatus).
+    ///
+    /// This is the route back to a sent review that did not exist: an agent
+    /// takes minutes, the user closes the sheet, and the reply used to have
+    /// nowhere to land. Nil until `load(environment:)` has run, and its fields
+    /// are nil for a document that has never been reviewed.
+    var priorReview: ReviewStatus?
+
     /// Per-comment debounced saves, so typing does not hit the store on every
     /// keystroke. Cancelled and flushed before the bundle is built.
     private var pendingSaves: [UUID: Task<Void, Never>] = [:]
@@ -83,6 +93,11 @@ final class ReviewSheetModel {
 
     /// A `folderUnavailable` event that arrived before the outcome existed.
     private var folderUnavailableReason: String?
+
+    /// Kept from `load(environment:)` so that folding a sync event in can read
+    /// the store back. Nil until the sheet has loaded, and in a preview, where
+    /// no events arrive.
+    private var environment: (any AppEnvironment)?
 
     /// - Parameters:
     ///   - document: everything the reader already holds. The sheet does not
@@ -108,6 +123,7 @@ final class ReviewSheetModel {
         self.canUndoDelete = false
         self.outcome = previewOutcome
         self.isOpeningReply = false
+        self.priorReview = nil
     }
 
     // MARK: - Loading
@@ -116,6 +132,7 @@ final class ReviewSheetModel {
     /// comment list. Cheap, and every failure degrades to what the reader
     /// already handed over.
     func load(environment: any AppEnvironment) async {
+        self.environment = environment
         returnPath = environment.returnPathResolver.resolve(document.origin)
 
         let settings = await environment.settings.settings
@@ -127,6 +144,13 @@ final class ReviewSheetModel {
         if let fresh = try? await environment.store.comments(documentId: document.id), fresh.isEmpty == false {
             comments = fresh
         }
+
+        // A review sent earlier, and any reply to it. Read here rather than
+        // watched for, because the event that announced the reply may have gone
+        // out while this sheet did not exist (docs/04-flows.md § F6). The
+        // composer renders it from `priorReview` directly; the Sent screen,
+        // which only exists after a send, takes it from `outcome.reply`.
+        priorReview = try? await environment.store.reviewStatus(documentId: document.id)
     }
 
     /// Listens to sync for as long as the sheet is open.
@@ -136,6 +160,7 @@ final class ReviewSheetModel {
     /// `WrittenReview` whether it wrote or queued, so the events are what tell
     /// the two apart.
     func observe(environment: any AppEnvironment) async {
+        self.environment = environment
         for await event in environment.sync.events() {
             apply(event)
         }
@@ -157,31 +182,35 @@ final class ReviewSheetModel {
                 outcome?.delivery = .queued(reason: reason)
             }
 
-        case let .replyReceived(documentId, replyURL):
+        case let .replyReceived(documentId, _):
             guard documentId == document.id else { return }
             outcome?.reply = ReviewSentOutcome.Reply(receivedAt: Date(), text: nil)
-            let url = replyURL
-            Task { [weak self] in
-                let text = await ReviewSheetModel.replyText(at: url)
-                self?.outcome?.reply?.text = text
-            }
+            // The text comes from the store, not from the URL the event
+            // carried: Sync has already written it there
+            // (`DocumentStoring.recordReply`), and reading the folder from here
+            // would need a security scope the UI does not hold. It used to try
+            // anyway and usually failed.
+            if let environment { reloadReply(environment: environment) }
 
         default:
             return
         }
     }
 
-    /// Best-effort read of an agent's reply.
-    ///
-    /// Nonisolated so the read happens off the main actor. Returns nil whenever
-    /// the file cannot be read — most often because the sync folder's security
-    /// scope is not open, which no contract currently lets the UI ask for. The
-    /// Sent screen renders the reply's arrival either way and "Open as
-    /// document" is unaffected, since that goes through Sync.
-    private nonisolated static func replyText(at url: URL) async -> String? {
-        guard let text = try? String(contentsOf: url, encoding: .utf8) else { return nil }
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        return trimmed.isEmpty ? nil : trimmed
+    /// Re-reads the stored review status and shows whatever reply it holds.
+    func reloadReply(environment: any AppEnvironment) {
+        Task { [weak self] in
+            guard let self else { return }
+            guard let status = try? await environment.store.reviewStatus(documentId: self.document.id) else { return }
+            self.priorReview = status
+            guard let text = status.replyText, text.isEmpty == false else { return }
+            if self.outcome != nil {
+                self.outcome?.reply = ReviewSentOutcome.Reply(
+                    receivedAt: status.replyReceivedAt ?? Date(),
+                    text: text
+                )
+            }
+        }
     }
 
     // MARK: - Counts and copy
@@ -305,7 +334,11 @@ final class ReviewSheetModel {
     }
 
     /// Document order: page, then down the page, then oldest first.
-    private nonisolated static func isBefore(_ first: CommentSnapshot, _ second: CommentSnapshot) -> Bool {
+    ///
+    /// Internal rather than private so `AppUITests` can check it: it is pure,
+    /// it is the order the exported bundle is numbered in, and getting it wrong
+    /// renumbers every comment in a review.
+    nonisolated static func isBefore(_ first: CommentSnapshot, _ second: CommentSnapshot) -> Bool {
         if first.resolvedOnPage != second.resolvedOnPage {
             return first.resolvedOnPage < second.resolvedOnPage
         }
@@ -341,7 +374,10 @@ final class ReviewSheetModel {
         let sentAt = Date()
         let draft = ReviewDraft(
             documentId: document.id,
-            externalDocumentId: document.id.uuidString,
+            // `review.json`'s `documentId` is the id the sending tool wrote
+            // into `meta.json`, which is the whole reason that field exists.
+            // Our own UUID is the fallback, not the answer.
+            externalDocumentId: document.externalId ?? document.id.uuidString,
             documentTitle: document.title,
             folderName: document.folderName,
             pdfURL: pdfURL,
@@ -367,7 +403,7 @@ final class ReviewSheetModel {
                 directoryName: written.directoryName,
                 payload: payload,
                 builtAt: written.writtenAt,
-                delivery: deliveryFromEvents()
+                delivery: delivery(for: written)
             )
             phase = .sent
             try? await environment.store.recordReviewSent(
@@ -385,13 +421,23 @@ final class ReviewSheetModel {
         }
     }
 
-    /// Whatever the event stream said while the bundle was being built. Pending
-    /// when it said nothing yet, which is the common case and is not a claim
-    /// about anything.
-    private func deliveryFromEvents() -> ReviewSentOutcome.Delivery {
+    /// What actually happened to the bundle.
+    ///
+    /// `WrittenReview.isQueued` is the answer, and it is the writer's own: the
+    /// UI used to infer it by racing `SyncCoordinating.events()`, whose losing
+    /// side is a screen claiming a review was delivered when it is sitting in a
+    /// local queue. The events are still folded in — one may have arrived while
+    /// the bundle was being built, and `.reviewWritten` is what later confirms
+    /// a queued bundle went out — but they are no longer how this is decided.
+    private func delivery(for written: WrittenReview) -> ReviewSentOutcome.Delivery {
+        if written.isQueued {
+            return .queued(
+                reason: folderUnavailableReason
+                    ?? "The sync folder is not reachable right now."
+            )
+        }
         if let writtenAt = confirmedWriteAt { return .written(at: writtenAt) }
-        if let reason = folderUnavailableReason { return .queued(reason: reason) }
-        return .pending
+        return .written(at: written.writtenAt)
     }
 
     // MARK: - The reply (docs/04-flows.md § F6)
@@ -402,11 +448,13 @@ final class ReviewSheetModel {
     ///   including the ordinary case of there being no reply yet, which throws
     ///   `.nothingToIngest`.
     func openReply(environment: any AppEnvironment) async -> UUID? {
-        guard let outcome else { return nil }
+        // Either the review sent a moment ago, or one sent days ago whose reply
+        // has only just been read back out of the store.
+        guard let directoryName = outcome?.directoryName ?? priorReview?.directoryName else { return nil }
         isOpeningReply = true
         defer { isOpeningReply = false }
         do {
-            return try await environment.sync.ingestReply(fromReviewDirectory: outcome.directoryName)
+            return try await environment.sync.ingestReply(fromReviewDirectory: directoryName)
         } catch let error as PencilLoopError {
             failureMessage = error.message
             return nil

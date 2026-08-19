@@ -100,6 +100,8 @@ public struct ReviewSheet: View {
                 header
             }
 
+            previousReviewSection
+
             commentsSection
 
             ReviewIncludeSection(
@@ -132,6 +134,52 @@ public struct ReviewSheet: View {
                 onSend: { Task { await self.model.send(environment: self.environment) } }
             )
         }
+    }
+
+    /// A review sent before this sheet was opened, and the agent's reply to it
+    /// if one has arrived (docs/04-flows.md § F6).
+    ///
+    /// This is the case that used to be unreachable. A reply takes minutes, the
+    /// sheet is closed long before it lands, and the only route to it was a
+    /// `SyncEvent` that no screen was listening for. The store had the text all
+    /// along; nothing could ask.
+    @ViewBuilder
+    private var previousReviewSection: some View {
+        if model.phase == .composing, let status = model.priorReview, status.hasBeenSent {
+            Section {
+                if let text = status.replyText, text.isEmpty == false {
+                    Text(text)
+                        .font(.body)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.vertical, 2)
+                    Button {
+                        Task {
+                            if let id = await self.model.openReply(environment: self.environment) {
+                                self.dismiss()
+                                self.onOpenReply(id)
+                            }
+                        }
+                    } label: {
+                        Label("Open reply as document", systemImage: "doc.badge.plus")
+                    }
+                    .disabled(model.isOpeningReply)
+                } else {
+                    Text("Nothing back yet. A reply appears here when the agent writes one.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            } header: {
+                Text(ReviewSheet.previousReviewHeading(status))
+            } footer: {
+                Text("Sending again writes a second bundle to the same folder. The comments below are the ones you have now, not the ones you sent.")
+            }
+        }
+    }
+
+    private static func previousReviewHeading(_ status: ReviewStatus) -> String {
+        guard let sentAt = status.sentAt else { return "Previously sent" }
+        return "Sent " + sentAt.formatted(date: .abbreviated, time: .shortened)
     }
 
     /// "3 comments, 2 inked pages", then the document and the time spent.

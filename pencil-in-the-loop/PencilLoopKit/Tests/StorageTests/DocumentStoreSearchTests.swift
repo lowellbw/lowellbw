@@ -128,12 +128,28 @@ final class DocumentStoreSearchTests: XCTestCase {
         let lastAdded = try XCTUnwrap(newestFirst.last?.addedAt)
         XCTAssertGreaterThanOrEqual(firstAdded, lastAdded)
 
-        let byTitle = try await store.summaries(LibraryQuery(sort: .title, ascending: false))
-        XCTAssertEqual(
-            byTitle.map(\.title),
-            ["Auth refactor plan", "Latency budget"],
-            "ascending == false is A–Z for .title (DTOs.swift, LibraryQuery.ascending)"
+        let oldestFirst = try await store.summaries(LibraryQuery(sort: .dateAdded, ascending: true))
+        let firstOfAscending = try XCTUnwrap(oldestFirst.first?.addedAt)
+        let lastOfAscending = try XCTUnwrap(oldestFirst.last?.addedAt)
+        XCTAssertLessThanOrEqual(
+            firstOfAscending,
+            lastOfAscending,
+            "ascending == true is oldest-first for .dateAdded (DTOs.swift, LibraryQuery.ascending)"
         )
+    }
+
+    func testTitleSortIsAToZWhenAscending() async throws {
+        let store = try await populated()
+
+        // `LibraryQuery.ascending` is frozen in DTOs.swift: "`true` is
+        // oldest-first for `.dateAdded` and A–Z for `.title`". `LibraryModel`
+        // passes `ascending: sort == .title` on exactly that reading, so an
+        // inverted branch here is a Library that sorts titles backwards.
+        let aToZ = try await store.summaries(LibraryQuery(sort: .title, ascending: true))
+        XCTAssertEqual(aToZ.map(\.title), ["Auth refactor plan", "Latency budget"])
+
+        let zToA = try await store.summaries(LibraryQuery(sort: .title, ascending: false))
+        XCTAssertEqual(zToA.map(\.title), ["Latency budget", "Auth refactor plan"])
     }
 
     func testAllowedStatesExcludeArchivedByDefault() {
@@ -143,6 +159,22 @@ final class DocumentStoreSearchTests: XCTestCase {
         )
         XCTAssertFalse(LibraryFetch.allowedStateRawValues([]).contains(DocState.archived.rawValue))
         XCTAssertEqual(LibraryFetch.allowedStateRawValues([.read]), ["read"])
+    }
+
+    func testSortDescriptorsFollowTheFrozenConvention() {
+        // Asserted on the descriptors themselves as well as through a fetch:
+        // this half holds whatever SwiftData does with them.
+        let titleAscending = LibraryFetch.sortDescriptors(for: LibraryQuery(sort: .title, ascending: true))
+        XCTAssertEqual(titleAscending.first?.order, .forward, "A–Z when ascending")
+
+        let titleDescending = LibraryFetch.sortDescriptors(for: LibraryQuery(sort: .title, ascending: false))
+        XCTAssertEqual(titleDescending.first?.order, .reverse)
+
+        let dateAscending = LibraryFetch.sortDescriptors(for: LibraryQuery(sort: .dateAdded, ascending: true))
+        XCTAssertEqual(dateAscending.first?.order, .forward, "oldest-first when ascending")
+
+        let dateDescending = LibraryFetch.sortDescriptors(for: LibraryQuery(sort: .dateAdded, ascending: false))
+        XCTAssertEqual(dateDescending.first?.order, .reverse)
     }
 
     func testSearchTermIsTrimmed() {

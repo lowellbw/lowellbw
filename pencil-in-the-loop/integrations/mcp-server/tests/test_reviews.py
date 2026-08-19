@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -74,6 +75,21 @@ def make_outbox(root: Path) -> None:
     (outbox / ".2026-08-19-in-flight.review.tmp").mkdir(parents=True)
     (outbox / "not-a-review").mkdir(parents=True)
     (outbox / "stray.review").write_text("a file, not a directory", encoding="utf-8")
+
+    # Pin directory mtimes. list_review_bundles sorts on review.json's
+    # `reviewedAt` and falls back to the directory's mtime when there is none,
+    # so a bundle without a readable review.json otherwise sorts by wall-clock
+    # "now" -- which silently reorders this fixture the moment the date rolls
+    # over. Explicit mtimes make the assertion mean what it says.
+    for name, when in (
+        ("2026-08-18-auth-refactor-plan.review", "2026-08-18T21:14:00Z"),
+        ("2026-08-17-q3-planning.review", "2026-08-17T09:00:00Z"),
+        ("2026-08-16-broken.review", "2026-08-16T09:00:00Z"),
+    ):
+        stamp = datetime.strptime(when, "%Y-%m-%dT%H:%M:%SZ").replace(
+            tzinfo=timezone.utc
+        ).timestamp()
+        os.utime(outbox / name, (stamp, stamp))
 
 
 class ReviewReadingTests(unittest.TestCase):

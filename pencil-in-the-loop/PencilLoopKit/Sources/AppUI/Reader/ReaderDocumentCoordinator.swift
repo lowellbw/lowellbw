@@ -203,7 +203,7 @@ public final class ReaderDocumentCoordinator: NSObject {
         guard recogniser.state == .ended else { return }
         let resolver = self.model.pageResolver
         let candidates: [UIResponder?] = [
-            resolver.canvas(forPageIndex: self.model.currentPageIndex),
+            resolver.inkOverlay(forPageIndex: self.model.currentPageIndex)?.canvasView,
             resolver.anyCanvas,
             self.pdfView
         ]

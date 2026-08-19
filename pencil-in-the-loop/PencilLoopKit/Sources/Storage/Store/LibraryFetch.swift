@@ -78,8 +78,14 @@ enum LibraryFetch {
         return states.map(\.rawValue).sorted()
     }
 
-    /// Newest-first for `.dateAdded` and A–Z for `.title` when `ascending` is
-    /// false, per `LibraryQuery.ascending`.
+    /// Plain ascending order, exactly as `LibraryQuery.ascending` freezes it:
+    /// `true` is oldest-first for `.dateAdded` and **A–Z** for `.title`; `false`
+    /// is newest-first and Z–A (DTOs.swift).
+    ///
+    /// Both branches therefore read the same way — `ascending` maps to
+    /// `.forward` — and the tie-breaker is the other column. `.title` breaks
+    /// ties newest-first because two documents with the same title are almost
+    /// always the same plan sent twice.
     static func sortDescriptors(for query: LibraryQuery) -> [SortDescriptor<Document>] {
         switch query.sort {
         case .dateAdded:
@@ -89,7 +95,7 @@ enum LibraryFetch {
             ]
         case .title:
             return [
-                SortDescriptor(\Document.title, order: query.ascending ? .reverse : .forward),
+                SortDescriptor(\Document.title, order: query.ascending ? .forward : .reverse),
                 SortDescriptor(\Document.addedAt, order: .reverse)
             ]
         }

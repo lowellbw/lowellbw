@@ -44,10 +44,12 @@ struct ReviewSentOutcome: Sendable, Hashable {
         /// When the reply event reached us.
         var receivedAt: Date
 
-        /// The prose, when it could be read. Nil is normal: no contract hands
-        /// the reply's text to the UI, so this is a best-effort read of the
-        /// URL the event carried, and the folder's security scope may be shut.
-        /// "Open as document" works either way.
+        /// The prose, as the store recorded it
+        /// (`DocumentStoring.recordReply`, read back through
+        /// `reviewStatus(documentId:)`). Briefly nil between the arrival event
+        /// and that read; nil for good only if the reply was empty. It used to
+        /// be read from the folder directly and usually failed, because the
+        /// sync folder's security scope is not open to the UI.
         var text: String?
     }
 

@@ -10,8 +10,8 @@
 //
 //  This protocol is AppUI-internal by design. It is not a Core contract because
 //  it never crosses a module boundary — Reader and Comment are both AppUI — and
-//  it takes `UIView`, `CGPoint` and `PKCanvasView`, none of which Core is
-//  allowed to name (STYLE.md § 7).
+//  it takes `UIView`, `CGPoint` and `PageCanvasController`, none of which Core
+//  is allowed to name (STYLE.md § 7).
 //
 //  The Reader adopts it on a small adapter object rather than on its main view,
 //  so that these five members do not have to be unique names in a type that
@@ -22,6 +22,7 @@
 import Foundation
 import PencilKit
 import UIKit
+import Annotate
 import Core
 
 /// What the Reader must answer for comment capture to work
@@ -69,13 +70,18 @@ public protocol CommentPageResolving: AnyObject {
     ///   all.
     func textHit(at point: CGPoint) -> CommentTextHit?
 
-    /// The canvas currently overlaying a page, so that the dot stroke a
-    /// stationary Pencil press has already drawn can be taken back
-    /// (docs/02-spec.md § S2, "The long-press is a stroke until it isn't").
+    /// The ink overlay currently on a page, so that the dot stroke a stationary
+    /// Pencil press has already drawn can be taken back (docs/02-spec.md § S2,
+    /// "The long-press is a stroke until it isn't").
+    ///
+    /// The controller rather than its `PKCanvasView`: cancelling a stroke in
+    /// flight is `PageCanvasController.cancelStrokeInFlight()`, and going
+    /// through the controller is what stops this unit reaching into PencilKit's
+    /// own gesture recognisers from the outside.
     ///
     /// - Returns: nil when that page is not on screen or has no canvas. Nil
     ///   costs nothing: there was no stroke to cancel.
-    func canvas(forPageIndex pageIndex: Int) -> PKCanvasView?
+    func inkOverlay(forPageIndex pageIndex: Int) -> PageCanvasController?
 
     /// Where a stored anchor's rect currently sits on screen, for placing its
     /// margin marker.

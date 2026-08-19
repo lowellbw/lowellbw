@@ -98,6 +98,22 @@ give every document and review a history and a diff. The watcher is already
 behind a protocol so a git transport can be added without rework; the cost is a
 commit step on the outbox write and a sensible answer to conflicts.
 
+### B11 · A real Night page tint
+`docs/01` rule 9 asked for Books' Night and v1 ships White, Cream, Sepia and Grey
+instead, because a multiply wash cannot darken a page without darkening its text
+and everything else is inversion, which the same rule forbids (see the note under
+that rule).
+
+Doing it properly means the app compositing the page rather than tinting what
+PDFKit drew: render each page to a bitmap, map luminance rather than inverting
+channels — text towards white, page towards near-black, hue preserved so figures
+and syntax highlighting survive — and cache the result per page and zoom level.
+That is a real feature with a real cost: a render pass per page, a cache to
+invalidate, and ink that must be exempted from the mapping or graphite drawn in
+daylight vanishes at night. Worth doing only if the people using this actually
+read in the dark; a dim Sepia at low screen brightness is what most people
+reach for.
+
 ---
 
 ## Smaller things

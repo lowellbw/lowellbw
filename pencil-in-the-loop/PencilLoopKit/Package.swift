@@ -169,6 +169,21 @@ let package = Package(
         .testTarget(name: "SyncTests", dependencies: ["Sync", "Core"]),
         .testTarget(name: "IngestTests", dependencies: ["Ingest", "Core"]),
         .testTarget(name: "AnnotateTests", dependencies: ["Annotate", "Core"]),
-        .testTarget(name: "ExportTests", dependencies: ["Export", "Core"])
+        .testTarget(name: "ExportTests", dependencies: ["Export", "Core"]),
+
+        // AppUI's pure logic: marker placement, popover state, the library's
+        // strings, the review sheet's ordering. Those four types were written
+        // as values with no dependencies precisely so they could be tested, and
+        // then there was no target to test them in.
+        //
+        // Views are not tested here and should not be: Pencil input, hover,
+        // squeeze and transcription cannot be exercised without a device, and
+        // faking them into a test proves nothing (STYLE.md § 10). What to check
+        // by hand is written down in FirstBuild.md § 6 instead.
+        //
+        // Note for whoever writes the next test here: `AppUI` is compiled with
+        // `.defaultIsolation(MainActor.self)`, so its types are main-actor
+        // bound and the test cases below are `@MainActor` to match.
+        .testTarget(name: "AppUITests", dependencies: ["AppUI", "Core"])
     ]
 )

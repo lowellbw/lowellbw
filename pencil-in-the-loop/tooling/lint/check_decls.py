@@ -16,6 +16,18 @@ Three checks:
    `ReviewBundleBuilding.build(…)`. SDK noise is kept out by
    sdk_allowlist.txt plus a prefix rule.
 
+Two things that look like type references and are not, and are therefore
+handled rather than allow-listed as if they were types:
+
+- **Macro expansions.** `#Preview` and `#Predicate` are macros, not types. They
+  are matched with their `#` and looked up as `#Preview` / `#Predicate`, so a
+  macro nobody has heard of is still reported — but the bare word `Preview` no
+  longer has to be accepted everywhere in the repo to let a view have a preview.
+- **Generic parameters.** `struct LibraryView<Detail: View>` declares `Detail`;
+  it is not a reference to anything. Reading it as one is what pushed a real
+  generic parameter down to a single letter to appease this script, which is the
+  linter editing the code rather than the other way round.
+
 Exits non-zero listing every problem.
 """
 
@@ -47,6 +59,16 @@ DECL_RE = re.compile(
 
 TYPE_REF = re.compile(r"\b([A-Z][A-Za-z0-9_]{2,})\b")
 
+# `struct LibraryView<Detail: View>`, `func map<Element>(…)`. The names inside
+# the angle brackets are declared by that line, not referenced by it. Nested
+# brackets (`<T: Collection<Int>>`) are deliberately not matched: the parameter
+# is still picked up from the simpler declarations that surround it, and a regex
+# that tries to balance angle brackets in Swift is a regex that is wrong.
+GENERIC_PARAMETERS = re.compile(
+    r"\b(?:struct|class|enum|actor|protocol|typealias|func)\s+"
+    r"[A-Za-z_]\w*\s*<([^<>{}]*)>"
+)
+
 IMPORT_LINE = re.compile(r"^\s*(?:@\w+\s+)*import\b")
 
 # Words that appear capitalised in code without being types. Compilation
@@ -60,15 +82,29 @@ NON_TYPES = {
 }
 
 
+MACRO_ENTRY = re.compile(r"^#[A-Za-z_]\w*$")
+
+
 def read_allowlist(name):
+    """Entries from an allow-list file.
+
+    `#` starts a comment, *except* when it opens a macro entry — `#Preview`,
+    `#Predicate`. Those are how a macro is allow-listed without its bare name
+    becoming acceptable everywhere in the repo, so the reader has to be able to
+    tell `#Preview` from `# Preview is Apple's`.
+    """
     path = os.path.join(HERE, name)
     entries = set()
     if not os.path.exists(path):
         return entries
     with open(path, "r", encoding="utf-8") as handle:
         for line in handle:
-            line = line.split("#", 1)[0].strip()
             for word in line.split():
+                if MACRO_ENTRY.match(word):
+                    entries.add(word)
+                    continue
+                if word.startswith("#"):
+                    break
                 entries.add(word)
     return entries
 
@@ -189,6 +225,17 @@ def declarations(code):
         depth += line.count("{") - line.count("}")
 
 
+def generic_parameters(code):
+    """Every generic parameter name declared in a file."""
+    names = set()
+    for match in GENERIC_PARAMETERS.finditer(code):
+        for part in match.group(1).split(","):
+            head = part.split(":")[0].strip()
+            if re.fullmatch(r"[A-Za-z_]\w*", head):
+                names.add(head)
+    return names
+
+
 def qualified_name(line, start, name):
     """`Qualifier.Name` when the reference is a member access, else `name`."""
     if start == 0 or line[start - 1] != ".":
@@ -232,6 +279,8 @@ def main():
             every_name.add(name)
             if depth == 0:
                 top_level.setdefault(name, []).append((relative, number))
+        # Declared by their declaration line, not referenced by it.
+        every_name |= generic_parameters(code)
 
     # 1 · duplicates
     for name, sites in sorted(top_level.items()):
@@ -275,6 +324,24 @@ def main():
                 continue
             for match in TYPE_REF.finditer(line):
                 name = match.group(1)
+                start = match.start()
+
+                # `#Preview`, `#Predicate`: a macro, not a type. Looked up with
+                # its `#`, so allowing one macro does not allow its bare name
+                # everywhere in the repo.
+                if start > 0 and line[start - 1] == "#":
+                    if "#" + name in sdk_names:
+                        continue
+                    if name in seen:
+                        continue
+                    seen.add(name)
+                    problems.append(
+                        f"{relative}:{number}: `#{name}` is a macro this check "
+                        f"does not know. Add `#{name}` — with the hash — to "
+                        f"tooling/lint/sdk_allowlist.txt if it is Apple's."
+                    )
+                    continue
+
                 if name in known or looks_like_sdk(name, sdk_names):
                     continue
                 # A member of a qualified name — `Schema.Version`,

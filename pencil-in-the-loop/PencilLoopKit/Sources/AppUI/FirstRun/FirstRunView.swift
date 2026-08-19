@@ -25,7 +25,6 @@ import Core
 public struct FirstRunView: View {
 
     private let environment: any AppEnvironment
-    private let folderAccess: any FolderAccessing
     private let onFinish: (SyncFolder) -> Void
 
     @State private var isChoosingFolder = false
@@ -33,20 +32,16 @@ public struct FirstRunView: View {
     @State private var problem: String?
 
     /// - Parameters:
-    ///   - environment: settings are written through it, and the one-time
-    ///     speech asset download is started through it (docs/03-architecture.md
-    ///     § 4).
-    ///   - folderAccess: prepares the folder and mints the bookmark. Not on
-    ///     `AppEnvironment` yet — see this unit's report.
+    ///   - environment: settings are written through it, the folder is prepared
+    ///     through its `folderAccess`, and the one-time speech asset download
+    ///     is started through its transcriber (docs/03-architecture.md § 4).
     ///   - onFinish: called with the prepared folder, so the shell can start
     ///     syncing it without re-reading settings.
     public init(
         environment: any AppEnvironment,
-        folderAccess: any FolderAccessing,
         onFinish: @escaping (SyncFolder) -> Void = { _ in }
     ) {
         self.environment = environment
-        self.folderAccess = folderAccess
         self.onFinish = onFinish
     }
 
@@ -95,7 +90,7 @@ public struct FirstRunView: View {
             do {
                 let folder = try await SyncFolderChoice.adopt(
                     url,
-                    folderAccess: self.folderAccess,
+                    folderAccess: self.environment.folderAccess,
                     settings: self.environment.settings
                 )
                 // Queued, not awaited to completion: the download runs in the
@@ -111,8 +106,5 @@ public struct FirstRunView: View {
 }
 
 #Preview("First run") {
-    FirstRunView(
-        environment: PreviewEnvironment(),
-        folderAccess: PreviewFolderAccess()
-    )
+    FirstRunView(environment: PreviewEnvironment())
 }

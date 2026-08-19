@@ -173,6 +173,50 @@ public final class PageCanvasController: UIView, PKCanvasViewDelegate {
         Task { await coordinator.flush(previous) }
     }
 
+    // MARK: - The comment gesture's stroke
+
+    /// The drawing on this canvas right now.
+    ///
+    /// Cheap: `PKDrawing` is a value type and taking a copy is a retain, not a
+    /// deep copy. Read it before a press that might turn into a comment, so
+    /// there is something to restore if PencilKit commits the dot anyway.
+    public var currentDrawing: PKDrawing {
+        self.canvasView.drawing
+    }
+
+    /// Cancels the stroke PencilKit is building right now, if there is one.
+    ///
+    /// "Let the dot be drawn, and take it back" (docs/02-spec.md § S2). A
+    /// stationary Pencil press has already started a stroke by the time the
+    /// comment gesture is recognised; disabling the canvas's own drawing
+    /// recogniser mid-gesture cancels it, and PencilKit discards what it was
+    /// building. Re-enabling in the same breath means the very next Pencil
+    /// touch draws normally.
+    ///
+    /// It is here rather than in the caller because the recogniser it toggles
+    /// belongs to `canvasView`, and reaching through a canvas from another
+    /// module to poke one of its gesture recognisers is the kind of thing that
+    /// stops working silently when PencilKit changes. This is the supported
+    /// way to ask for it.
+    ///
+    /// **On failure:** nothing. There may be no stroke in flight, which is the
+    /// common case; the worst outcome of calling it needlessly is nothing at
+    /// all.
+    public func cancelStrokeInFlight() {
+        let drawingGesture = self.canvasView.drawingGestureRecognizer
+        drawingGesture.isEnabled = false
+        drawingGesture.isEnabled = true
+    }
+
+    /// Replaces what is on the canvas, as an ordinary edit.
+    ///
+    /// Recorded and persisted like anything the reader drew, which is the point:
+    /// restoring the pre-press drawing after a dot was committed has to reach
+    /// the store, or the dot comes back the next time the page is bound.
+    public func replaceDrawing(_ drawing: PKDrawing) {
+        self.canvasView.drawing = drawing
+    }
+
     // MARK: - Tools
 
     /// Applies stored ink defaults to this canvas.

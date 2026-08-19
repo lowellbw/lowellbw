@@ -30,6 +30,10 @@
       "minimum": 0,
       "description": "Written by the ingesting app, not by the sender: a markdown sender cannot know it, because pagination happens when the iPad renders the PDF. Optional and advisory when a sender does write it; the authoritative count comes from the rendered PDF."
     },
+    "sourceURL": {
+      "type": "string",
+      "description": "Absolute URL this document came from on the web, when it came from the web. The share extension records it for a shared link — it does no network work of its own, so the app fetches and renders the page later. Optional; nothing in ingest branches on it."
+    },
     "tags": {
       "type": "array",
       "items": { "type": "string" },

@@ -208,11 +208,20 @@ public actor PollingFolderWatcher: FolderWatching {
 
     /// One look at the folder, and whatever events it implies.
     func pollOnce(folder: SyncFolder) async {
+        // `FolderAccessing` declares `withAccess` twice, differing only in
+        // whether the closure is async, and a synchronous closure literal
+        // converts freely to the async parameter type — so a bare call from
+        // this `async` method is an overload the compiler could resolve either
+        // way. Naming the closure's type as `async` leaves exactly one
+        // candidate: an async function value cannot convert to a synchronous
+        // parameter, so this is the async overload and nothing else.
+        let read: @Sendable (SyncFolder) async -> Sample = { scoped in
+            PollingFolderWatcher.sample(of: scoped)
+        }
+
         let sample: Sample
         do {
-            sample = try access.withAccess(to: folder) { scoped in
-                PollingFolderWatcher.sample(of: scoped)
-            }
+            sample = try await access.withAccess(to: folder, perform: read)
         } catch {
             sample = .unreachable
         }
@@ -265,8 +274,9 @@ public actor PollingFolderWatcher: FolderWatching {
 
     // MARK: - Sampling and diffing, as pure functions
 
-    /// Reads the folder. Synchronous on purpose: it runs inside
-    /// `FolderAccessing.withAccess(to:perform:)`, whose closure cannot await.
+    /// Reads the folder. Synchronous on purpose: it does no waiting of its own,
+    /// and it is called from inside `FolderAccessing.withAccess(to:perform:)`
+    /// so the security scope is open for the whole of it.
     ///
     /// - Returns: `.unreachable` when the root is not a readable directory.
     public static func sample(of folder: SyncFolder) -> Sample {

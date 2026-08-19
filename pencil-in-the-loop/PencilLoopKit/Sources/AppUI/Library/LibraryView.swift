@@ -13,23 +13,19 @@ import Core
 /// The library sidebar and the split view that holds it.
 ///
 /// The detail column is supplied by the caller: the reader is another unit's
-/// screen, and the library has no business knowing its type. Wave 3 passes the
-/// reader; a preview passes a placeholder.
-///
-/// The generic parameter is a single letter because
-/// `tooling/lint/check_decls.py` reads any capitalised word of three or more
-/// characters as a type reference, and a generic parameter is declared nowhere.
+/// screen, and the library has no business knowing its type. `RootView` passes
+/// the reader; a preview passes a placeholder.
 ///
 /// **Offline:** everything here works with no network. Rows that are not yet
 /// local are dimmed and disabled rather than failing on tap, rows that failed
 /// to ingest show their reason, and pull-to-refresh reports a folder it cannot
 /// reach in the status line instead of blocking the list
 /// (docs/02-spec.md § S1).
-public struct LibraryView<T: View>: View {
+public struct LibraryView<Detail: View>: View {
 
     private let environment: any AppEnvironment
-    private let folderAccess: any FolderAccessing
-    private let detail: (DocumentSummary) -> T
+    private let selecting: UUID?
+    private let detail: (DocumentSummary) -> Detail
 
     @State private var model: LibraryModel
     @State private var selection: UUID?
@@ -37,18 +33,19 @@ public struct LibraryView<T: View>: View {
     @State private var isShowingSettings = false
 
     /// - Parameters:
-    ///   - environment: the one route to every dependency.
-    ///   - folderAccess: needed by the empty state's folder picker, which is the
-    ///     recovery when the sync folder was never chosen or has gone away.
-    ///     Not on `AppEnvironment` yet — see this unit's report.
+    ///   - environment: the one route to every dependency, the folder picker's
+    ///     `folderAccess` included.
+    ///   - selecting: a document to select when it changes — an agent's reply
+    ///     that has just been opened as a document (docs/04-flows.md § F6). The
+    ///     selection is otherwise the sidebar's own; this only nudges it.
     ///   - detail: the reader, built for whichever row is selected.
     public init(
         environment: any AppEnvironment,
-        folderAccess: any FolderAccessing,
-        @ViewBuilder detail: @escaping (DocumentSummary) -> T
+        selecting: UUID? = nil,
+        @ViewBuilder detail: @escaping (DocumentSummary) -> Detail
     ) {
         self.environment = environment
-        self.folderAccess = folderAccess
+        self.selecting = selecting
         self.detail = detail
         _model = State(initialValue: LibraryModel(environment: environment))
     }
@@ -118,11 +115,20 @@ public struct LibraryView<T: View>: View {
         .task {
             await model.observeSync()
         }
+        .onChange(of: selecting) { _, requested in
+            guard let requested else { return }
+            Task {
+                // The row may not be in the list yet — a reply is ingested and
+                // announced in the same breath — so load before selecting.
+                await self.model.load()
+                self.selection = requested
+            }
+        }
         .fileImporter(isPresented: $isChoosingFolder, allowedContentTypes: [.folder]) { result in
             self.adopt(result)
         }
         .sheet(isPresented: $isShowingSettings) {
-            SettingsView(environment: environment, folderAccess: folderAccess)
+            SettingsView(environment: environment)
         }
     }
 
@@ -187,11 +193,14 @@ public struct LibraryView<T: View>: View {
         case let .success(url):
             Task {
                 do {
-                    _ = try await SyncFolderChoice.adopt(
+                    let folder = try await SyncFolderChoice.adopt(
                         url,
-                        folderAccess: self.folderAccess,
+                        folderAccess: self.environment.folderAccess,
                         settings: self.environment.settings
                     )
+                    // Persisting the bookmark is half of it; this is what makes
+                    // documents start arriving (AppEnvironment.adoptFolder).
+                    await self.environment.adoptFolder(folder)
                     await self.model.refresh()
                 } catch {
                     self.model.report(SyncFolderChoice.describe(error))
@@ -205,8 +214,7 @@ public struct LibraryView<T: View>: View {
 
 #Preview("Library") {
     LibraryView(
-        environment: PreviewEnvironment(summaries: DocumentSummary.previewSamples),
-        folderAccess: PreviewFolderAccess()
+        environment: PreviewEnvironment(summaries: DocumentSummary.previewSamples)
     ) { summary in
         Text(summary.title)
             .font(.body)
@@ -214,10 +222,7 @@ public struct LibraryView<T: View>: View {
 }
 
 #Preview("Empty") {
-    LibraryView(
-        environment: PreviewEnvironment(),
-        folderAccess: PreviewFolderAccess()
-    ) { summary in
+    LibraryView(environment: PreviewEnvironment()) { summary in
         Text(summary.title)
             .font(.body)
     }

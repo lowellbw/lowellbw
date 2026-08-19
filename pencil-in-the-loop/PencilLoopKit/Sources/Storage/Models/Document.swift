@@ -19,6 +19,10 @@
 //    `IngestedDocument.relativePath`.
 //  • `readingSeconds` is new: the review sheet shows time spent
 //    (docs/02-spec.md § S4) and `ReviewDraft.timeSpent` needs a source.
+//  • `refreshFailureReason` / `refreshFailedAt` are new: a failed re-ingest of a
+//    document whose pinned bytes are intact is a failed *refresh*, not a lost
+//    document, and it needs somewhere to live that is not `localState`. See
+//    `DocumentStore.recordIngestFailure(folderName:reason:)`.
 //
 //  Internal, not public. `@Model` types never cross an actor boundary
 //  (STYLE.md § 6, DTOs.swift header), and the cheapest way to guarantee that is
@@ -74,6 +78,22 @@ final class Document {
     /// External storage is not an optimisation here, it is the difference
     /// between a library fetch that reads a thousand rows and one that reads a
     /// thousand rows plus a thousand novels.
+    ///
+    /// **First thing to check on the Mac.** `.externalStorage` maps to Core
+    /// Data's `allowsExternalBinaryDataStorage`, which is defined for binary
+    /// attributes only. If SwiftData validates it the way Core Data
+    /// historically has, `LibraryContainer.make()` throws at launch and every
+    /// `StorageTests` case fails with it — a loud, unmissable failure with one
+    /// obvious cause. It is left in place deliberately, because the alternative
+    /// is a guess: storing the text as `Data` behind a computed accessor takes
+    /// it out of the `#Predicate` in `LibraryFetch` and turns the one-round-trip
+    /// search that docs/02-spec.md § S1 asks for into a two-stage in-memory
+    /// filter, and that is not a trade to make blind.
+    ///
+    /// If it does throw, the remedy in order: delete the attribute here — a
+    /// plain `String` column is correct and search keeps working — and only if
+    /// library-fetch memory then proves to be a problem, move to `Data` plus a
+    /// computed accessor and pay for the two-stage search knowingly.
     @Attribute(.externalStorage) var extractedText: String
 
     /// `SourceFormat.rawValue`.
@@ -114,6 +134,22 @@ final class Document {
     /// Accumulated reading time in seconds, for the review sheet's "time spent"
     /// subtitle. Added to by `DocumentStore.addReadingSeconds(_:documentId:)`.
     var readingSeconds: Double
+
+    // MARK: Refresh
+
+    /// Why the most recent attempt to ingest this folder failed, or nil when
+    /// the last attempt succeeded.
+    ///
+    /// Separate from `localState` on purpose. A failed *refresh* of a document
+    /// whose pinned bytes are still on disk does not make the document
+    /// unreadable — the pin either replaced the previous copy or rolled it back
+    /// (`InboxItemPinner`) — so the row keeps `.local` and carries this note
+    /// instead. Writing `.unavailable` there would dim a row the user could
+    /// read offline yesterday, which docs/02-spec.md § Cross-cutting forbids.
+    var refreshFailureReason: String?
+
+    /// When `refreshFailureReason` was recorded. Nil when there is no failure.
+    var refreshFailedAt: Date?
 
     // MARK: Review lifecycle
 
@@ -172,7 +208,9 @@ final class Document {
         lastReadPage: Int = 0,
         readingSeconds: Double = 0,
         commentCount: Int = 0,
-        inkedPageCount: Int = 0
+        inkedPageCount: Int = 0,
+        refreshFailureReason: String? = nil,
+        refreshFailedAt: Date? = nil
     ) {
         self.id = id
         self.externalId = externalId
@@ -201,6 +239,8 @@ final class Document {
         self.readingSeconds = readingSeconds
         self.commentCount = commentCount
         self.inkedPageCount = inkedPageCount
+        self.refreshFailureReason = refreshFailureReason
+        self.refreshFailedAt = refreshFailedAt
         self.pages = []
         self.comments = []
     }
@@ -301,6 +341,17 @@ extension Document {
     /// is what stops a reader handing PDFKit the documents root itself.
     var pdfURL: URL? {
         StorageLocations.url(forStoredPath: pdfPath)
+    }
+
+    /// Whether the pinned `document.pdf` this row names is still on disk.
+    ///
+    /// The question `DocumentStore.recordIngestFailure(folderName:reason:)`
+    /// turns on: a row whose bytes are here stays readable however badly the
+    /// next refresh went, so the failure is recorded as a note rather than as
+    /// `.unavailable`.
+    var hasPinnedBytes: Bool {
+        guard let url = pdfURL else { return false }
+        return FileManager.default.fileExists(atPath: url.path(percentEncoded: false))
     }
 
     /// The pinned `source.md`, when there was one.

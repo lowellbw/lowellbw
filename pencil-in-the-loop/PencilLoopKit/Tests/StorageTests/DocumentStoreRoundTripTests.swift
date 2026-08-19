@@ -142,6 +142,46 @@ final class DocumentStoreRoundTripTests: XCTestCase {
         XCTAssertEqual(detail.state, .reviewing, "so does the state the annotation put it in")
     }
 
+    func testTheSameDocumentUnderANewFolderNameMovesTheRow() async throws {
+        let store = try StorageTestFactory.store()
+        let monday = StorageTestFactory.ingested(folderName: "2026-08-18-auth-refactor-plan")
+        try await store.upsert(monday)
+
+        // The same plan, sent again tomorrow: same `meta.json` id, new
+        // `YYYY-MM-DD-` prefix, so `upsert` matches the row by id.
+        let tuesday = StorageTestFactory.ingested(
+            id: monday.id,
+            folderName: "2026-08-19-auth-refactor-plan"
+        )
+        let summary = try await store.upsert(tuesday)
+
+        XCTAssertEqual(summary.id, monday.id, "it is the same document")
+        XCTAssertEqual(
+            summary.folderName,
+            "2026-08-19-auth-refactor-plan",
+            "the row names the folder the document is in now"
+        )
+
+        let rows = try await store.summaries(.all)
+        XCTAssertEqual(rows.count, 1, "re-sending is not duplicating")
+
+        let known = try await store.knownFolderNames()
+        XCTAssertEqual(
+            known,
+            ["2026-08-19-auth-refactor-plan"],
+            "or the scanner treats the new folder as new for ever"
+        )
+
+        let matched = try await store.documentId(forFolderName: "2026-08-19-auth-refactor-plan")
+        XCTAssertEqual(
+            matched,
+            monday.id,
+            "a reply.md in <new folder>.review has to find its way back (SyncCoordinator.collectReplies)"
+        )
+        let stale = try await store.documentId(forFolderName: "2026-08-18-auth-refactor-plan")
+        XCTAssertNil(stale, "the folder it used to be in holds nothing now")
+    }
+
     func testIngestFailureLeavesAnErrorRowRatherThanNothing() async throws {
         let store = try StorageTestFactory.store()
         try await store.recordIngestFailure(folderName: "2026-08-20-broken", reason: "No document to read.")

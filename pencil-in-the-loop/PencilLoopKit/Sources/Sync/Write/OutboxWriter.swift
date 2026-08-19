@@ -63,6 +63,11 @@ public struct OutboxWriter: OutboxWriting {
             )
         }
 
+        // A send interrupted by a crash left a hidden `.tmp` sibling in the
+        // user's outbox. Nothing on either side of the folder looks at those, so
+        // this is the only place they get cleared up.
+        StagingSweeper.sweep(in: folder.outboxURL)
+
         let finalURL = folder.outboxURL.appendingPathComponent(payload.directoryName, isDirectory: true)
         let stagingURL = folder.outboxURL.appendingPathComponent(
             SyncFileNames.stagingName(for: payload.directoryName, token: UUID().uuidString),
@@ -70,6 +75,7 @@ public struct OutboxWriter: OutboxWriting {
         )
 
         var byteCount: Int64 = 0
+        var fileCount = payload.files.count
         do {
             try manager.createDirectory(at: stagingURL, withIntermediateDirectories: true)
 
@@ -85,8 +91,12 @@ public struct OutboxWriter: OutboxWriting {
 
             // A second review of the same document replaces the first, and the
             // first may already carry an agent's reply. Losing that would lose
-            // half a conversation, so it comes across.
-            try OutboxWriter.carryForwardReply(from: finalURL, to: stagingURL)
+            // half a conversation, so it comes across — and it counts, because
+            // `WrittenReview` describes the bundle on disk, not the payload.
+            if let carried = try OutboxWriter.carryForwardReply(from: finalURL, to: stagingURL) {
+                byteCount += carried
+                fileCount += 1
+            }
 
             try OutboxWriter.swap(staging: stagingURL, into: finalURL)
         } catch {
@@ -94,13 +104,13 @@ public struct OutboxWriter: OutboxWriting {
             throw PencilLoopError.outboxWriteFailed(reason: error.localizedDescription)
         }
 
-        SyncLog.outbox.info("Wrote \(payload.directoryName) — \(payload.files.count) file(s), \(byteCount) bytes.")
+        SyncLog.outbox.info("Wrote \(payload.directoryName) — \(fileCount) file(s), \(byteCount) bytes.")
         return WrittenReview(
             documentId: payload.documentId,
             directoryURL: finalURL,
             directoryName: payload.directoryName,
             writtenAt: Date(),
-            fileCount: payload.files.count,
+            fileCount: fileCount,
             byteCount: byteCount
         )
     }
@@ -144,13 +154,20 @@ public struct OutboxWriter: OutboxWriting {
 
     /// Copies an existing `reply.md` into the staging directory, so replacing a
     /// bundle does not discard the reply it already collected.
-    private static func carryForwardReply(from existing: URL, to staging: URL) throws {
+    ///
+    /// - Returns: the bytes copied, or nil when nothing was carried — either
+    ///   there was no reply, or the payload already brought one of its own and
+    ///   it is counted with the rest of the payload.
+    private static func carryForwardReply(from existing: URL, to staging: URL) throws -> Int64? {
         let manager = FileManager.default
         let source = existing.appendingPathComponent(DocumentFileNames.reply, isDirectory: false)
-        guard manager.fileExists(atPath: source.path) else { return }
+        guard manager.fileExists(atPath: source.path) else { return nil }
         let target = staging.appendingPathComponent(DocumentFileNames.reply, isDirectory: false)
-        guard manager.fileExists(atPath: target.path) == false else { return }
+        guard manager.fileExists(atPath: target.path) == false else { return nil }
         try manager.copyItem(at: source, to: target)
+
+        let values = try? target.resourceValues(forKeys: [.fileSizeKey])
+        return Int64(values?.fileSize ?? 0)
     }
 
     /// The rename. Coordinated, so a presenter on the other side is told this

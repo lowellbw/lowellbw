@@ -25,20 +25,15 @@ import Annotate
 /// app reading documents.
 public struct SettingsView: View {
 
-    private let folderAccess: any FolderAccessing
-
     @State private var model: SettingsModel
     @State private var isChoosingFolder = false
     @State private var isConfirmingPurge = false
 
     @Environment(\.dismiss) private var dismiss
 
-    /// - Parameters:
-    ///   - environment: every dependency the rows read or write.
-    ///   - folderAccess: prepares a newly chosen folder. Not on
-    ///     `AppEnvironment` yet — see this unit's report.
-    public init(environment: any AppEnvironment, folderAccess: any FolderAccessing) {
-        self.folderAccess = folderAccess
+    /// - Parameter environment: every dependency the rows read or write, the
+    ///   `folderAccess` that prepares a newly chosen folder included.
+    public init(environment: any AppEnvironment) {
         _model = State(initialValue: SettingsModel(environment: environment))
     }
 
@@ -96,7 +91,7 @@ public struct SettingsView: View {
         Section("Ink") {
             Picker("Tool", selection: binding(\.ink.tool)) {
                 ForEach(InkToolKind.allCases, id: \.self) { tool in
-                    Text(SettingsView.name(for: tool)).tag(tool)
+                    Text(tool.displayName).tag(tool)
                 }
             }
             Picker("Ink", selection: inkTint) {
@@ -119,7 +114,7 @@ public struct SettingsView: View {
     private var dictationSection: some View {
         Section("Dictation") {
             Picker("Language", selection: binding(\.transcriptionLocaleIdentifier)) {
-                ForEach(languageIdentifiers, id: \.self) { identifier in
+                ForEach(model.languageIdentifiers, id: \.self) { identifier in
                     Text(SettingsView.languageName(identifier)).tag(identifier)
                 }
             }
@@ -201,45 +196,18 @@ public struct SettingsView: View {
 
     // MARK: - Language list
 
-    /// The locales offered, with whatever is currently set kept in the list even
-    /// when it is not one of them.
-    ///
-    /// A curated list because nothing in the contracts reports which locales the
-    /// transcriber has — see this unit's report.
-    private var languageIdentifiers: [String] {
-        var identifiers = SettingsView.offeredLocaleIdentifiers
-        let current = model.settings.transcriptionLocaleIdentifier
-        if identifiers.contains(current) == false {
-            identifiers.insert(current, at: 0)
-        }
-        return identifiers
-    }
-
-    private static let offeredLocaleIdentifiers = [
-        "en-GB", "en-US", "en-AU", "en-IN", "fr-FR", "de-DE", "es-ES", "it-IT",
-        "pt-BR", "nl-NL", "sv-SE", "ja-JP", "ko-KR", "zh-CN"
-    ]
-
+    /// The engine's own list of languages, asked for when the screen appears
+    /// (`SettingsModel.languageIdentifiers`). It used to be fourteen BCP-47
+    /// identifiers hardcoded here, which offered languages the engine could not
+    /// transcribe and hid ones it could.
     private static func languageName(_ identifier: String) -> String {
         Locale.current.localizedString(forIdentifier: identifier) ?? identifier
-    }
-
-    /// `InkToolKind` is a persisted vocabulary and carries no display names of
-    /// its own; naming them is a UI decision, so it is made here.
-    private static func name(for tool: InkToolKind) -> String {
-        switch tool {
-        case .pen: return "Pen"
-        case .pencil: return "Pencil"
-        case .marker: return "Marker"
-        case .monoline: return "Monoline"
-        case .highlighter: return "Highlighter"
-        }
     }
 
     private func handle(_ result: Result<URL, any Error>) {
         switch result {
         case let .success(url):
-            Task { await self.model.adoptFolder(url, folderAccess: self.folderAccess) }
+            Task { await self.model.adoptFolder(url) }
         case let .failure(error):
             model.report(SyncFolderChoice.describe(error))
         }
@@ -293,8 +261,7 @@ public struct SettingsView: View {
                 syncFolderDisplayName: "PencilLoop",
                 hasCompletedFirstRun: true
             )
-        ),
-        folderAccess: PreviewFolderAccess()
+        )
     )
 }
 
@@ -306,7 +273,6 @@ public struct SettingsView: View {
                 syncFolderDisplayName: "PencilLoop",
                 hasCompletedFirstRun: true
             )
-        ),
-        folderAccess: PreviewFolderAccess()
+        )
     )
 }

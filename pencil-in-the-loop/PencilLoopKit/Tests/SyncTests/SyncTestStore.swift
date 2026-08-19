@@ -76,8 +76,29 @@ actor SyncTestStore: DocumentStoring {
         return summary
     }
 
+    /// Records the failure, and — like the real store — leaves a row behind for
+    /// a folder it had never heard of, so `knownFolderNames()` reports it from
+    /// then on. That detail is the whole reason a failed folder can be skipped
+    /// by later scans, so a fake that skipped it would hide the bug.
+    ///
+    /// A row that already exists keeps its `localState`: a failed refresh of a
+    /// document whose bytes are pinned does not make it unreadable
+    /// (`DocumentStore.recordIngestFailure(folderName:reason:)`).
     func recordIngestFailure(folderName: String, reason: String) throws {
         failures[folderName] = reason
+        guard rows.contains(where: { $0.folderName == folderName }) == false else { return }
+        rows.append(DocumentSummary(
+            id: UUID(),
+            title: folderName,
+            originDisplayName: OriginKind.manual.displayName,
+            addedAt: Date(),
+            pageCount: 0,
+            state: .unread,
+            localState: .unavailable(reason: reason),
+            commentCount: 0,
+            hasInk: false,
+            folderName: folderName
+        ))
     }
 
     // MARK: - Reading state
@@ -127,6 +148,12 @@ actor SyncTestStore: DocumentStoring {
 
     func recordReply(documentId: UUID, text: String, receivedAt: Date) throws {
         replies[documentId] = text
+    }
+
+    /// Reports whatever `recordReply(documentId:text:receivedAt:)` was told, so
+    /// a reply-loop test can read back what the coordinator stored.
+    func reviewStatus(documentId: UUID) throws -> ReviewStatus? {
+        ReviewStatus(documentId: documentId, replyText: replies[documentId])
     }
 
     // MARK: - Reading time

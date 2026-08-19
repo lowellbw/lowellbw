@@ -73,6 +73,23 @@ public actor LegacySpeechEngine: SpeechTranscribing {
         SFSpeechRecognizer(locale: locale) != nil
     }
 
+    /// Every language `SFSpeechRecognizer` knows.
+    ///
+    /// Wider than what it can do *on device* — `supportsOnDeviceRecognition` is
+    /// per-recogniser and only answerable once one exists — so the picker may
+    /// offer a language whose assets never arrive. That is the honest list to
+    /// show: `assetState()` is what reports the difference, in the one Settings
+    /// row that exists for it, and a language hidden from the picker can never
+    /// be chosen at all.
+    ///
+    /// - Returns: an empty array when the system will not say. Never throws.
+    public func supportedLocales() async -> [Locale] {
+        SFSpeechRecognizer.supportedLocales().sorted {
+            SpeechAvailability.displayName(for: $0)
+                .localizedCaseInsensitiveCompare(SpeechAvailability.displayName(for: $1)) == .orderedAscending
+        }
+    }
+
     /// Whether the on-device model for a language is present.
     public static func supportsOnDeviceTranscription(for locale: Locale) -> Bool {
         guard let recogniser = SFSpeechRecognizer(locale: locale) else { return false }

@@ -120,6 +120,13 @@ final class OutboxWriterTests: XCTestCase {
             in: temp.folder
         )
         XCTAssertEqual(reply, "Done — see the branch.", "replacing a bundle must not discard half a conversation")
+
+        // `WrittenReview` describes the bundle on disk, and the carried reply is
+        // part of it. Counting only the payload under-reports what was written.
+        let replyBytes = Int64("Done — see the branch.".utf8.count)
+        let payloadBytes = second.files.reduce(Int64(0)) { $0 + Int64($1.data.count) }
+        XCTAssertEqual(written.fileCount, second.files.count + 1)
+        XCTAssertEqual(written.byteCount, payloadBytes + replyBytes)
     }
 
     // MARK: - Replies

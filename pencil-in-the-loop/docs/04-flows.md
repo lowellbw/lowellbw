@@ -115,7 +115,7 @@ ReturnPathResolver reads meta.json origin
       ├─ cowork + checkin        ──▶ "SAME THREAD"  (session picks it up)
       ├─ claude-code + cloud     ──▶ "SAME THREAD"  (claude --cloud … -p)
       ├─ claude-code + local     ──▶ "SAME THREAD"  (claude -p … --resume)
-      └─ share / manual / none   ──▶ "NO THREAD"    (share sheet fallback)
+      └─ share / manual / none   ──▶ "NEW THREAD"   (share sheet fallback)
       ▼
 destination row shows the resolved path — user sees it before committing
       ▼

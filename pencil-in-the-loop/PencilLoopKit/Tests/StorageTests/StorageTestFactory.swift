@@ -93,4 +93,18 @@ enum StorageTestFactory {
     static func store() throws -> DocumentStore {
         try DocumentStore.inMemory()
     }
+
+    /// Writes a stand-in `document.pdf` into the pinned directory for a folder
+    /// name, so a row backed by it really does have bytes on disk.
+    ///
+    /// The store asks the filesystem whether a document is still readable
+    /// (`Document.hasPinnedBytes`), so a test about that question cannot fake
+    /// it. Remove the returned directory in a `defer`.
+    @discardableResult
+    static func pinBytes(forFolderName folderName: String) throws -> URL {
+        let directory = StorageLocations.documentDirectory(folderName: folderName)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        try Data("%PDF-1.4 pinned".utf8).write(to: directory.appendingPathComponent("document.pdf"))
+        return directory
+    }
 }

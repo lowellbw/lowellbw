@@ -109,7 +109,7 @@ final class InboxScannerTests: XCTestCase {
         ])
     }
 
-    func testAKnownFolderIsReportedOnceThenSkipped() async throws {
+    func testAKnownFolderIsReportedUntilItHasBeenHandled() async throws {
         let temp = try SyncTemporaryFolder()
         defer { temp.removeAll() }
         try temp.writeInboxDirectory(named: "2026-08-18-known")
@@ -117,9 +117,32 @@ final class InboxScannerTests: XCTestCase {
 
         let first = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
         let second = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
+        let handled = try XCTUnwrap(first.first)
+        await scanner.markHandled(handled)
+        let third = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
 
         XCTAssertEqual(first.count, 1, "a cold scanner has no memory, so it reports and lets the pin check decide")
-        XCTAssertTrue(second.isEmpty, "nothing changed, so there is nothing to look at again")
+        XCTAssertEqual(
+            second.count,
+            1,
+            "scanning is not handling: nothing has ingested it yet, so it is still outstanding"
+        )
+        XCTAssertTrue(third.isEmpty, "handled at this modification date, so there is nothing to look at again")
+    }
+
+    func testAFolderWhoseIngestFailedIsReportedAgain() async throws {
+        let temp = try SyncTemporaryFolder()
+        defer { temp.removeAll() }
+        try temp.writeInboxDirectory(named: "2026-08-18-broken")
+        let scanner = InboxScanner()
+
+        // The coordinator scans, tries to ingest, fails — and therefore never
+        // calls `markHandled(_:)`. The next scan has to offer it again, or the
+        // retry `InboxItemPinner` promises the user cannot happen at all.
+        _ = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-broken"])
+        let again = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-broken"]).items
+
+        XCTAssertEqual(again.map { $0.folderName }, ["2026-08-18-broken"])
     }
 
     func testAKnownFolderRewrittenInPlaceIsReportedAgain() async throws {
@@ -127,7 +150,9 @@ final class InboxScannerTests: XCTestCase {
         defer { temp.removeAll() }
         let directory = try temp.writeInboxDirectory(named: "2026-08-18-rewritten")
         let scanner = InboxScanner()
-        _ = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-rewritten"])
+        let first = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-rewritten"]).items
+        let handled = try XCTUnwrap(first.first)
+        await scanner.markHandled(handled)
 
         let pdf = directory.appendingPathComponent("document.pdf")
         try Data("%PDF-1.4 regenerated, longer than before".utf8).write(to: pdf)
@@ -146,7 +171,9 @@ final class InboxScannerTests: XCTestCase {
         defer { temp.removeAll() }
         try temp.writeInboxDirectory(named: "2026-08-18-known")
         let scanner = InboxScanner()
-        _ = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"])
+        let first = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
+        let handled = try XCTUnwrap(first.first)
+        await scanner.markHandled(handled)
 
         await scanner.forgetSeenFolders()
         let again = try await scanner.scan(temp.folder, knownFolderNames: ["2026-08-18-known"]).items
