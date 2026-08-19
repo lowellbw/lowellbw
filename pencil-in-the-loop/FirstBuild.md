@@ -12,6 +12,27 @@ gives you no line number at all.
 
 ---
 
+## 0 · The fastest loop
+
+Nothing in this repository has ever been compiled. The first build will produce errors —
+the plan is to get the whole list at once rather than one at a time.
+
+```sh
+git clone https://github.com/lowellbw/lowellbw.git
+cd lowellbw/pencil-in-the-loop
+git checkout claude/new-project-repo-u1op58
+./tooling/first-build.sh
+```
+
+It resolves packages, builds `PencilLoopKit` alone (which separates package problems from
+app-target problems), then builds the app and extension, and writes `first-build-errors.txt`
+— one line per diagnostic, repo-relative paths, duplicates collapsed, plus a count per
+file so the worst offenders are obvious.
+
+Paste that file back into Claude and the fixes come back as a diff. Repeat until it is
+empty. Signing is off for these builds, so you need neither a Team ID nor a device yet —
+do §2 when you first want to run it on the iPad.
+
 ## 1 · Step 0: push, then read CI
 
 **Do this before opening Xcode.**

@@ -33,3 +33,5 @@ Packages/
 # Local, never committed: a real DEVELOPMENT_TEAM belongs in Config/Signing.xcconfig,
 # which *is* committed. This is for anything genuinely private alongside it.
 Config/Local.xcconfig
+.first-build.log
+first-build-errors.txt
