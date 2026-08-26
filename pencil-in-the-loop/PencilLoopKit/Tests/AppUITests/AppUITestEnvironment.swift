@@ -32,6 +32,7 @@ struct AppUITestEnvironment: AppEnvironment {
     let bundleBuilder: any ReviewBundleBuilding
     let returnPathResolver: any ReturnPathResolving
     let settings: any SettingsStoring
+    let groups: any DocumentGrouping
     let folderAccess: any FolderAccessing
 
     init(
@@ -46,7 +47,11 @@ struct AppUITestEnvironment: AppEnvironment {
         self.corrector = PreviewTranscriptCorrector()
         self.bundleBuilder = PreviewReviewBundleBuilder()
         self.returnPathResolver = PreviewReturnPathResolver()
-        self.settings = PreviewSettingsStore(settings: settings)
+        // One store behind both faces, as in the live app: a test that files a
+        // document must see it through `settings` as well.
+        let settingsStore = PreviewSettingsStore(settings: settings)
+        self.settings = settingsStore
+        self.groups = settingsStore
         self.folderAccess = PreviewFolderAccess()
     }
 
