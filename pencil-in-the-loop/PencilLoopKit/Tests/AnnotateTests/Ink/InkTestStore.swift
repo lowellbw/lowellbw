@@ -83,6 +83,8 @@ actor InkTestStore: DocumentStoring {
 
     func setPinned(_ pinned: Bool, documentId: UUID) throws {}
 
+    func reorderPinned(_ documentIds: [UUID]) throws {}
+
     func setLastReadPage(_ pageIndex: Int, documentId: UUID) throws {}
 
     func setLocalState(_ state: DocumentLocalState, documentId: UUID) throws {}
